@@ -1,0 +1,16 @@
+{
+  "name": "fullstack-app",
+  "version": "1.0.0",
+  "description": "Full-stack React Native + Node.js monorepo starter",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --names \"BACKEND,MOBILE\" --prefix-colors \"cyan,magenta\" \"npm run dev --prefix backend\" \"npm run dev --prefix mobile\"",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:mobile": "npm run dev --prefix mobile",
+    "install:all": "npm install && npm install --prefix backend && npm install --prefix mobile",
+    "setup": "npm run install:all"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

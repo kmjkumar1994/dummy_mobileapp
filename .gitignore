@@ -1,0 +1,31 @@
+node_modules/
+.env
+*.log
+.DS_Store
+dist/
+build/
+.expo/
+web-build/
+android/
+ios/
+mobile/app/tabs/timeguardian/index old.jsx
+mobile/app/tabs/timeguardian/settings old.jsx
+mobile/context/TimeGuardianContext old.js
+mobile/timeguardian/logic/dayBlocks old.js
+mobile/timeguardian/storage/repository old.js
+mobile/app/tabs/timeguardian/index old 0607.jsx
+mobile/app/tabs/timeguardian/settings old 0607.jsx
+mobile/context/TimeGuardianContext old 0607.js
+mobile/timeguardian/logic/dayBlocks old 0607.js
+mobile/timeguardian/storage/repository old 0607.js
+mobile/app/tabs/tools/audio-converter claude.js
+mobile/app/tabs/tools/audio-converter old.js
+mobile/app/tabs/tools/converted-files old.js
+mobile/app/tabs/tools/audio-converter old 08072026.js
+mobile/app/tabs/tools/converted-files old 08072026.js
+mobile/hooks/useAudioPlayer old.js
+backend/routes/audioRoutes old.js
+mobile/app/tabs/tools/converted-files old 08072026 2.js
+mobile/services/audioConverterService old 08072026.js
+mobile/hooks/useAudioPlayer 12072026.js
+mobile/app/tabs/tools/audio-editor old 12072026.js
