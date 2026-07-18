@@ -1,3 +1,12 @@
 {
-  "expo": {}
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "42d145b5-2874-4399-a256-86bb5aba0e43"
+      }
+    },
+    "android": {
+      "package": "com.kmjkumar1994.fullstackapp"
+    }
+  }
 }
