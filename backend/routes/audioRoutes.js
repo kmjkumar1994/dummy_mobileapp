@@ -15,6 +15,12 @@ router.use(protect);
 const BACKEND_ROOT = path.join(__dirname, '..');
 const UPLOADS_DIR = path.join(BACKEND_ROOT, 'uploads');
 const OUTPUTS_DIR = path.join(BACKEND_ROOT, 'outputs');
+const NOISE_MODEL_PATH = path.join(BACKEND_ROOT, 'models', 'sh.rnnn');
+
+/** Escapes a filesystem path for safe use as an ffmpeg filter option value. */
+function ffmpegFilterPath(p) {
+  return p.replace(/\\/g, '/').replace(/:/g, '\\:');
+}
 
 /** DDMMYYYY_HH-MM-SS (dashes in time — safe for Windows filenames) */
 function makeTimestamp() {
@@ -223,7 +229,13 @@ async function probeSampleRate(inputPath) {
  *  - applies a volume level (0.0-1.5) to each segment — 0 is silent, 1 is
  *    original volume, up to 1.5 boosts it — kept in place either way
  *  - concatenates everything back together in order
- *  - optionally runs the result through a noise-reduction filter (afftdn)
+ *  - optionally runs the result through a noise-reduction filter. Uses
+ *    arnndn (a pretrained RNN denoiser) when the bundled model file is
+ *    present — unlike afftdn's adaptive/self-learning approach, arnndn
+ *    applies the SAME denoising from the very first sample, since it isn't
+ *    "learning" the noise profile as it goes (that learning ramp-up is why
+ *    afftdn used to sound like it only kicked in once voice appeared).
+ *    Falls back to afftdn only if the model file isn't present on disk.
  *  - optionally pitch-shifts the result for a Child/Woman/Man voice preset,
  *    using asetrate+aresample+atempo (pitch changes without changing speed) —
  *    standard ffmpeg filters, no extra models/plugins required
@@ -248,7 +260,12 @@ function buildEditFilter(segments, { reduceNoise, voicePreset, sampleRate } = {}
 
   if (reduceNoise) {
     const nextLabel = 'denoised';
-    chain.push(`[${finalLabel}]afftdn=nf=-25[${nextLabel}]`);
+    if (fs.existsSync(NOISE_MODEL_PATH)) {
+      chain.push(`[${finalLabel}]arnndn=m='${ffmpegFilterPath(NOISE_MODEL_PATH)}'[${nextLabel}]`);
+    } else {
+      console.warn('[audio] edit: noise model missing at', NOISE_MODEL_PATH, '— falling back to afftdn (has a warm-up ramp at the start)');
+      chain.push(`[${finalLabel}]afftdn=nf=-25[${nextLabel}]`);
+    }
     finalLabel = nextLabel;
   }
 
