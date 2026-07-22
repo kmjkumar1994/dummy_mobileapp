@@ -1,73 +1,81 @@
 /**
- * rotation.js
- * Pure function — no storage, no UI dependencies.
- * Computes the 4-week Sunday/Saturday rotation index from a single anchor date.
- *
- * The anchor date is a known Sunday that was a "mother's home visit" (index 0).
- * Everything about the rotation is derived from this one value — never stored week to week.
+ * rotation.js — v2
+ * Replaces fixed 4-week index with per-week plan lookup.
+ * Second Sat-Sun of every month = Satori (automatic, not user-configurable).
+ * Other weeks: check WeekPlan override first, fall back to rotation defaults.
  */
 
+import {
+  getSundayOfWeek,
+  isSecondWeekOfMonth,
+  getWeekOfMonthIndex,
+  getWeekPlan,
+  getRotationDefaultsForDate,
+  SUNDAY_BLOCKS,
+  SATURDAY_BLOCKS,
+} from '../storage/repository';
+
 /**
- * Returns the Sunday of the week containing the given date.
- * @param {string} dateStr - YYYY-MM-DD
- * @returns {Date}
+ * Resolves the Sunday block for a given date.
+ * Priority order:
+ *   1. Is this the second week of the month? → Always Satori
+ *   2. Does a WeekPlan override exist for this week? → Use its sundayType
+ *   3. Fall back to rotation defaults by week-of-month index
+ *
+ * @param {string} dateStr YYYY-MM-DD (must be a Sunday)
+ * @returns {Promise<{ label, start, end, category, type } | null>}
  */
-function getSundayOfWeek(dateStr) {
-  const date = new Date(dateStr + 'T00:00:00');
-  const day = date.getDay();
-  const sunday = new Date(date);
-  sunday.setDate(date.getDate() - day);
-  return sunday;
+export async function resolveSundayBlock(dateStr) {
+  // Rule 1 — second week of month is always Satori
+  if (isSecondWeekOfMonth(dateStr)) {
+    return { ...SUNDAY_BLOCKS.satori };
+  }
+
+  // Rule 2 — WeekPlan override
+  const weekStart = getSundayOfWeek(dateStr);
+  const plan      = await getWeekPlan(weekStart);
+  if (plan && plan.sundayType) {
+    const block = SUNDAY_BLOCKS[plan.sundayType];
+    return block ? { ...block } : null;
+  }
+
+  // Rule 3 — rotation defaults by week-of-month index
+  const weekIdx  = getWeekOfMonthIndex(dateStr);
+  const defaults = await getRotationDefaultsForDate(dateStr);
+  // Use modulo so 5-week months wrap cleanly
+  const slot     = defaults[weekIdx % defaults.length];
+  const block    = SUNDAY_BLOCKS[slot?.sundayType || 'open'];
+  return block ? { ...block } : null;
 }
 
 /**
- * Returns rotation index 0..3 for any given date.
- * Handles dates before the anchor correctly via the +4 mod trick.
+ * Resolves the Saturday block for a given date.
+ * Priority order:
+ *   1. Second week of month → Satori
+ *   2. WeekPlan override
+ *   3. Rotation defaults
  *
- * Index meanings:
- *   0 → Mother's home visit (Sunday) / open (Saturday)
- *   1 → Wife outing (Sunday) / open (Saturday)
- *   2 → Rest / friends time (Sunday) / open (Saturday)
- *   3 → Karmayoga field service (both Sunday and Saturday)
- *
- * @param {string} dateStr - YYYY-MM-DD
- * @param {string} anchorDateStr - YYYY-MM-DD, always a Sunday, always index 0
- * @returns {number} 0 | 1 | 2 | 3
+ * @param {string} dateStr YYYY-MM-DD (must be a Saturday)
+ * @returns {Promise<{ label, start, end, category, type } | null>}
  */
-export function rotationIndex(dateStr, anchorDateStr) {
-  const sundayOfWeek = getSundayOfWeek(dateStr);
-  const anchorSunday = new Date(anchorDateStr + 'T00:00:00');
+export async function resolveSaturdayBlock(dateStr) {
+  // Rule 1 — second week of month is always Satori
+  if (isSecondWeekOfMonth(dateStr)) {
+    return { ...SATURDAY_BLOCKS.satori };
+  }
 
-  const diffMs = sundayOfWeek.getTime() - anchorSunday.getTime();
-  const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
-  const weeksSinceAnchor = Math.round(diffDays / 7);
+  // Rule 2 — WeekPlan override (Saturday type)
+  const weekStart = getSundayOfWeek(dateStr);
+  const plan      = await getWeekPlan(weekStart);
+  if (plan && plan.saturdayType) {
+    const block = SATURDAY_BLOCKS[plan.saturdayType];
+    return block ? { ...block } : null;
+  }
 
-  return ((weeksSinceAnchor % 4) + 4) % 4;
-}
-
-/**
- * Returns the rotation block for a given index and day type.
- * Returns null if that combination has no rotation block (open day).
- *
- * @param {number} index - 0..3
- * @param {'sunday'|'saturday'} dayType
- * @returns {{ label, start, end, category, type } | null}
- */
-export function getRotationBlock(index, dayType) {
-  const ROTATION_BLOCKS = {
-    sunday: [
-      { label: "Mother's home visit", start: '09:00', end: '18:00', category: 'family', type: 'protected' },
-      { label: 'Wife outing',         start: '09:00', end: '18:00', category: 'family', type: 'protected' },
-      { label: 'Rest / friends time', start: '09:00', end: '18:00', category: 'self',   type: 'protected' },
-      { label: 'Karmayoga field service', start: '08:00', end: '18:00', category: 'karmayoga', type: 'protected' },
-    ],
-    saturday: [
-      null,
-      null,
-      null,
-      { label: 'Karmayoga field service', start: '08:00', end: '18:00', category: 'karmayoga', type: 'protected' },
-    ],
-  };
-
-  return ROTATION_BLOCKS[dayType][index] ?? null;
+  // Rule 3 — rotation defaults
+  const weekIdx  = getWeekOfMonthIndex(dateStr);
+  const defaults = await getRotationDefaultsForDate(dateStr);
+  const slot     = defaults[weekIdx % defaults.length];
+  const block    = SATURDAY_BLOCKS[slot?.saturdayType || 'open'];
+  return block ? { ...block } : null;
 }
