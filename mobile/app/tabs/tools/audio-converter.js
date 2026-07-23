@@ -59,6 +59,11 @@ function getMimeLabel(mimeType) {
   return MIME_LABELS[mimeType?.toLowerCase()] || mimeType || 'Audio';
 }
 
+function isMp3Mime(mimeType) {
+  const m = (mimeType || '').toLowerCase();
+  return m === 'audio/mpeg' || m === 'audio/mp3';
+}
+
 // ─── screen ──────────────────────────────────────────────────────────────────
 
 export default function ConverterScreen() {
@@ -119,6 +124,13 @@ export default function ConverterScreen() {
     stagedUriRef.current = pendingFile.source === 'share' ? pendingFile.uri : null;
     resetOutputs();
     setError('');
+
+    if (isMp3Mime(pendingFile.mimeType)) {
+      Alert.alert(
+        'Already MP3',
+        'This shared file is already in MP3 format — no conversion needed. You can share, rename, or edit it as-is.'
+      );
+    }
 
     // Mark the intent as consumed so the context won't re-trigger
     markProcessed();
@@ -647,7 +659,6 @@ export default function ConverterScreen() {
                   path={displayPhonePath(wavOutput.uri)}
                   color={Colors.info}
                   last={!mp3Output}
-                  player={player}
                   uri={wavOutput.uri}
                   onDragStart={() => setScrollEnabled(false)}
                   onDragEnd={() => setScrollEnabled(true)}
@@ -666,7 +677,6 @@ export default function ConverterScreen() {
                   path={displayPhonePath(mp3Output.uri)}
                   color={Colors.success}
                   last
-                  player={player}
                   uri={mp3Output.uri}
                   onDragStart={() => setScrollEnabled(false)}
                   onDragEnd={() => setScrollEnabled(true)}
@@ -745,7 +755,7 @@ export default function ConverterScreen() {
 
 const OutputRow = React.memo(function OutputRow({
   icon, label, fileName, path, color, last,
-  player, uri, onDragStart, onDragEnd,
+  uri, onDragStart, onDragEnd,
   onShare, onRename, onDelete, actionsDisabled,
 }) {
   return (
@@ -759,7 +769,6 @@ const OutputRow = React.memo(function OutputRow({
       <Text style={styles.outputPath} selectable>{path}</Text>
 
       <PlaybackBar
-        player={player}
         uri={uri}
         color={color}
         disabled={actionsDisabled}

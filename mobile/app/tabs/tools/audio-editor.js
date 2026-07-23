@@ -12,9 +12,13 @@
  * There's no separate "trim" tool — trimming the start/end is just splitting
  * near that edge and deleting the small leftover piece.
  *
- * "Save" sends only the kept parts (with their volume levels) to the server,
- * which renders them into ONE new file, downloaded locally with an
- * "edited_" filename prefix and added to conversion history.
+ * Voice presets (Original/Child/Woman/Man) pitch-shift the WHOLE result, and
+ * Noise Reduction is a separate, independent, off-by-default toggle.
+ *
+ * "Save" sends only the kept parts (with their volume levels) plus the voice
+ * preset and noise-reduction flag to the server, which renders everything
+ * into ONE new file, downloaded locally with an "edited_" filename prefix
+ * and added to conversion history.
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
@@ -73,7 +77,9 @@ export default function AudioEditorScreen() {
   const fileName = params.fileName || 'audio';
   const format   = (params.format || '').toLowerCase() === 'mp3' ? 'mp3' : 'wav';
 
-  const player = useAudioPlayer();
+  // Scoped to fileUri — this screen only ever cares about this one file, so
+  // it only re-renders on ticks that are actually about it.
+  const player = useAudioPlayer(fileUri);
 
   const [duration, setDuration]     = useState(0);
   const [probing, setProbing]       = useState(true);
@@ -126,8 +132,6 @@ export default function AudioEditorScreen() {
   }, [fileUri]);
 
   // ── the one timeline: current playhead position on the ORIGINAL audio ──────
-  // player is the same shared singleton PlaybackBar below reads from, so this
-  // stays in sync with whatever the user is dragging/playing.
   const isLoadedHere = player.playingUri === fileUri;
   const currentSec = isLoadedHere ? (player.positionMillis || 0) / 1000 : 0;
 
@@ -303,7 +307,6 @@ export default function AudioEditorScreen() {
               </Text>
 
               <PlaybackBar
-                player={player}
                 uri={fileUri}
                 color={Colors.primary}
                 size="large"
@@ -495,7 +498,7 @@ const styles = StyleSheet.create({
   segmentRowActive: { borderColor: Colors.primary },
   segmentRowDeleted: { opacity: 0.5, borderStyle: 'dashed' },
   segmentTopRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  segmentTitle: { fontSize: 13, fontWeight: '600', color: Colors.text },
+  segmentTitle: { fontSize: 13, fontWeight: '600', color: Colors.text, flex: 1 },
   segIconBtn: { padding: 4 },
 
   volumeRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -517,6 +520,8 @@ const styles = StyleSheet.create({
   },
   voiceChipText: { fontSize: 12, fontWeight: '600', color: Colors.textSecondary },
   voiceChipTextSelected: { color: Colors.primary },
+
+  tinyHint: { fontSize: 11, color: Colors.textMuted, lineHeight: 15, marginTop: 4 },
 
   progressTrack: {
     height: 6,

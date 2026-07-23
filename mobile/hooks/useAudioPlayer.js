@@ -5,13 +5,27 @@
  *
  * Only ONE sound can play at a time across the whole app. This is done with
  * a module-level singleton (activeSound / activeUri) rather than per-component
- * state, so that pressing play on a row in one screen (e.g. audio-converter)
- * correctly stops a file that was left playing on another screen
- * (e.g. converted-files) — and every component using this hook stays in sync
- * via the `listeners` broadcast.
+ * state, so that pressing play on a row in one screen correctly stops a file
+ * that was left playing on another screen.
+ *
+ * ── Scoped subscriptions (perf) ─────────────────────────────────────────────
+ * Call `useAudioPlayer(uri)` with the specific file a component cares about.
+ * The hook will only re-render that component when playback state for THAT
+ * uri changes — not on every tick for every other file. This is what makes
+ * it safe to drop a PlaybackBar into every row of a long list: an unrelated
+ * row playing/pausing doesn't cascade re-renders through rows that aren't
+ * involved. (Previously, one shared `player` object was passed down as a
+ * prop to every row, so any tick anywhere re-rendered the whole list —
+ * that's what caused visible lag when pausing/playing frequently.)
+ *
+ * Call `useAudioPlayer()` with no uri when you only need the action
+ * functions (e.g. to stop() playback before a delete/rename) and don't care
+ * about re-rendering on ticks at all.
  *
  * Usage:
- *   const player = useAudioPlayer();
+ *   const player = useAudioPlayer(uri);      // scoped — for a row's own PlaybackBar
+ *   const player = useAudioPlayer();          // unscoped — actions only, no re-render subscription
+ *
  *   player.play(uri)                     // play, or toggle pause/resume if already loaded
  *   player.seek(uri, ms)                 // jump to an absolute position (loads file if needed)
  *   player.seekBy(uri, deltaMs)          // relative jump, e.g. +10000 / -10000 for FF/RW
@@ -19,7 +33,8 @@
  *   player.playRange(uri, startMs, endMs) // play only [start,end), auto-pausing at endMs
  *   player.stop(uri)                     // stop + unload
  *
- *   player.playingUri     — uri of the currently loaded file (or null)
+ *   player.playingUri     — uri of the currently loaded file (or null); for a
+ *                           scoped hook this is either `uri` or null
  *   player.isPlaying       — is it actively playing right now
  *   player.isLoading       — is a load in progress
  *   player.positionMillis  — current playback position (only meaningful while loaded)
@@ -34,6 +49,8 @@ let activeSound = null;
 let activeUri = null;
 let activeRangeEnd = null; // millis — if set, playback auto-pauses once position reaches this
 const listeners = new Set();
+
+const IDLE_STATE = { uri: null, isPlaying: false, isLoading: false, positionMillis: 0, durationMillis: 0, rate: 1 };
 
 function broadcast(update) {
   listeners.forEach((cb) => cb(update));
@@ -117,23 +134,37 @@ async function loadSound(uri, initialStatus) {
   }
 }
 
-export function useAudioPlayer() {
-  const [state, setState] = useState({
-    uri: null,
-    isPlaying: false,
-    isLoading: false,
-    positionMillis: 0,
-    durationMillis: 0,
-    rate: 1,
-  });
+export function useAudioPlayer(scopedUri) {
+  const [state, setState] = useState(() => (
+    activeUri === scopedUri && scopedUri !== undefined ? { ...IDLE_STATE, uri: scopedUri } : IDLE_STATE
+  ));
 
   useEffect(() => {
+    // Unscoped consumers only want the action functions below (e.g. to call
+    // stop() before a delete/rename) — skip subscribing entirely so they
+    // never re-render on ticks.
+    if (scopedUri === undefined) return undefined;
+
     const onUpdate = (update) => {
+      if (update.uri !== scopedUri) {
+        // Not about my file. Only worth a re-render if I currently think
+        // I'm the active one and need to flip off — otherwise bail by
+        // returning the same state reference (React skips the re-render).
+        setState((prev) => (prev.uri === null ? prev : IDLE_STATE));
+        return;
+      }
       setState((prev) => ({ ...prev, ...update }));
     };
+
     listeners.add(onUpdate);
+
+    // Sync immediately in case this uri is already the active one.
+    if (activeUri === scopedUri) {
+      setState((prev) => (prev.uri === scopedUri ? prev : { ...IDLE_STATE, uri: scopedUri }));
+    }
+
     return () => listeners.delete(onUpdate);
-  }, []);
+  }, [scopedUri]);
 
   /** Play `uri`. If it's already loaded, this toggles pause/resume instead. */
   const play = useCallback(async (uri) => {
@@ -198,7 +229,6 @@ export function useAudioPlayer() {
       return;
     }
 
-    // Not currently loaded — start playback at the offset (from 0).
     const start = Math.max(0, deltaMillis);
     await loadSound(uri, { shouldPlay: true, positionMillis: start });
   }, []);
@@ -223,7 +253,6 @@ export function useAudioPlayer() {
   /**
    * Play only the [startMillis, endMillis) window, auto-pausing once it's
    * reached. Always restarts from startMillis, even if already playing.
-   * Used to preview a single edited segment before saving.
    */
   const playRange = useCallback(async (uri, startMillis, endMillis) => {
     if (!uri) return;
