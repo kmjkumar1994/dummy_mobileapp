@@ -6,7 +6,7 @@
  */
 
 import {
-  getSundayOfWeek,
+  getSundayOfWeek, getMondayOfWeek,
   isSecondWeekOfMonth,
   getWeekOfMonthIndex,
   getWeekPlan,
@@ -31,10 +31,17 @@ export async function resolveSundayBlock(dateStr) {
     return { ...SUNDAY_BLOCKS.satori };
   }
 
-  // Rule 2 — WeekPlan override
-  const weekStart = getSundayOfWeek(dateStr);
+  // Rule 2 — WeekPlan override (keyed by Monday of the week)
+  const weekStart = getMondayOfWeek(dateStr);
   const plan      = await getWeekPlan(weekStart);
   if (plan && plan.sundayType) {
+    if (plan.sundayType === 'open') return null;
+    // Custom entry — build a block from the stored label
+    if (plan.sundayType === 'custom') {
+      return plan.sundayCustomLabel
+        ? { label: plan.sundayCustomLabel, start: '09:00', end: '18:00', category: 'self', type: 'soft' }
+        : null;
+    }
     const block = SUNDAY_BLOCKS[plan.sundayType];
     return block ? { ...block } : null;
   }
@@ -42,7 +49,6 @@ export async function resolveSundayBlock(dateStr) {
   // Rule 3 — rotation defaults by week-of-month index
   const weekIdx  = getWeekOfMonthIndex(dateStr);
   const defaults = await getRotationDefaultsForDate(dateStr);
-  // Use modulo so 5-week months wrap cleanly
   const slot     = defaults[weekIdx % defaults.length];
   const block    = SUNDAY_BLOCKS[slot?.sundayType || 'open'];
   return block ? { ...block } : null;
@@ -64,10 +70,17 @@ export async function resolveSaturdayBlock(dateStr) {
     return { ...SATURDAY_BLOCKS.satori };
   }
 
-  // Rule 2 — WeekPlan override (Saturday type)
-  const weekStart = getSundayOfWeek(dateStr);
+  // Rule 2 — WeekPlan override (keyed by Monday of the week)
+  const weekStart = getMondayOfWeek(dateStr);
   const plan      = await getWeekPlan(weekStart);
   if (plan && plan.saturdayType) {
+    if (plan.saturdayType === 'open') return null;
+    // Custom entry — build a block from the stored label
+    if (plan.saturdayType === 'custom') {
+      return plan.saturdayCustomLabel
+        ? { label: plan.saturdayCustomLabel, start: '09:00', end: '18:00', category: 'self', type: 'soft' }
+        : null;
+    }
     const block = SATURDAY_BLOCKS[plan.saturdayType];
     return block ? { ...block } : null;
   }

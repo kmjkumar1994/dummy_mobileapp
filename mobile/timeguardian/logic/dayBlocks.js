@@ -1,7 +1,7 @@
 /**
- * dayBlocks.js — v4
+ * dayBlocks.js — v5
  * Now async — must await getBlocksForDate() since rotation resolution is async.
- * Week starts Sunday.
+ * Week starts Monday (day 1).
  * Schedule is versioned — picks correct work hours for the given date.
  */
 
@@ -54,18 +54,20 @@ export function toStorageDate(display) {
 }
 
 /**
- * Returns Sun–Sat dates of the week containing the reference date.
- * Week starts Sunday.
+ * Returns Mon–Sun dates of the week containing the reference date.
+ * Week starts Monday (day 1).
  */
 export function getWeekDates(referenceDate) {
   const ref = referenceDate || new Date();
-  const day = ref.getDay(); // 0=Sun
-  const sunday = new Date(ref);
-  sunday.setDate(ref.getDate() - day);
-  sunday.setHours(0, 0, 0, 0);
+  const day = ref.getDay(); // 0=Sun, 1=Mon … 6=Sat
+  // Distance back to Monday: if Sunday (0) go back 6, else go back (day - 1)
+  const daysToMonday = (day === 0) ? 6 : day - 1;
+  const monday = new Date(ref);
+  monday.setDate(ref.getDate() - daysToMonday);
+  monday.setHours(0, 0, 0, 0);
   return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(sunday);
-    d.setDate(sunday.getDate() + i);
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   });
 }

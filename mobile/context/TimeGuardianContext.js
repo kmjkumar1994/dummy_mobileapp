@@ -11,14 +11,15 @@ import {
   getWeekPlans, getWeekPlan, saveWeekPlan,
   getScheduleChangeLog, addScheduleChangeLog,
   getCustomBlocks, addCustomBlock, updateCustomBlock, deleteCustomBlock, toggleCustomBlockActive,
-  addLogEntry, getRecentLogEntries,
+  addLogEntry, getRecentLogEntries, updateLogEntry, deleteLogEntry,
   getEnergyEntries, getEnergyChartData, upsertEnergyEntry,
   getDailyTasksForDate, addDailyTask, updateDailyTask, deleteDailyTask,
   getRecurringTasks, addRecurringTask, updateRecurringTask, deleteRecurringTask,
   toggleRecurringTaskActive, getRecurringTasksForDay,
+  getDayOverrides, getDayOverride, saveDayOverride as repoSaveDayOverride, clearDayOverride as repoClearDayOverride,
   DEFAULT_WORK_HOURS, DEFAULT_ROTATION_DEFAULTS,
-  getSundayOfWeek, isSecondWeekOfMonth,
-  SUNDAY_TYPE_LABELS, SATURDAY_TYPE_LABELS,
+  getMondayOfWeek, isSecondWeekOfMonth,
+  SUNDAY_TYPE_LABELS, SATURDAY_TYPE_LABELS, DAY_OVERRIDE_TYPES,
 } from '../timeguardian/storage/repository';
 import { todayStr, nowTimeStr, getDayOfWeek } from '../timeguardian/logic/dayBlocks';
 
@@ -39,6 +40,7 @@ const initialState = {
   energyEntries      : [],
   energyChartData    : [],
   todayEnergy        : null,
+  dayOverrides       : {},
 };
 
 const A = {
@@ -52,6 +54,7 @@ const A = {
   SET_RECURRING   : 'SET_RECURRING',
   SET_LOGS        : 'SET_LOGS',
   SET_ENERGY      : 'SET_ENERGY',
+  SET_DAY_OVERRIDES: 'SET_DAY_OVERRIDES',
 };
 
 function reducer(state, action) {
@@ -65,8 +68,9 @@ function reducer(state, action) {
     case A.SET_BLOCKS     : return { ...state, customBlocks: action.payload };
     case A.SET_RECURRING  : return { ...state, recurringTasks: action.payload };
     case A.SET_LOGS       : return { ...state, logEntries: action.payload };
-    case A.SET_ENERGY     : return { ...state, ...action.payload };
-    default               : return state;
+    case A.SET_ENERGY        : return { ...state, ...action.payload };
+    case A.SET_DAY_OVERRIDES : return { ...state, dayOverrides: action.payload };
+    default                  : return state;
   }
 }
 
@@ -81,6 +85,7 @@ export function TimeGuardianProvider({ children }) {
         weekPlans, scheduleChangeLog,
         blocks, recurringTasks, logs,
         energyEntries, energyChartData,
+        dayOverrides,
       ] = await Promise.all([
         getRotationAnchor(),
         getCurrentWorkHours(),
@@ -94,6 +99,7 @@ export function TimeGuardianProvider({ children }) {
         getRecentLogEntries(),
         getEnergyEntries(),
         getEnergyChartData(7),
+        getDayOverrides(),
       ]);
 
       const today       = todayStr();
@@ -109,6 +115,7 @@ export function TimeGuardianProvider({ children }) {
           weekPlans, scheduleChangeLog,
           customBlocks: blocks, recurringTasks,
           logEntries: logs, energyEntries, energyChartData, todayEnergy,
+          dayOverrides,
         },
       });
     })();
@@ -198,13 +205,43 @@ export function TimeGuardianProvider({ children }) {
   const removeRecurringTask = useCallback(async (id)   => { await deleteRecurringTask(id);          await refreshRecurring(); }, [refreshRecurring]);
   const toggleRecurring     = useCallback(async (id)   => { await toggleRecurringTaskActive(id);   await refreshRecurring(); }, [refreshRecurring]);
 
+  // ── Day Overrides (per-date, independent of week plan) ───────────────────
+
+  const refreshDayOverrides = useCallback(async () => {
+    dispatch({ type: A.SET_DAY_OVERRIDES, payload: await getDayOverrides() });
+  }, []);
+
+  const setDayOverride = useCallback(async (dateStr, type, note = '') => {
+    await repoSaveDayOverride(dateStr, type, note);
+    await refreshDayOverrides();
+  }, [refreshDayOverrides]);
+
+  const removeDayOverride = useCallback(async (dateStr) => {
+    await repoClearDayOverride(dateStr);
+    await refreshDayOverrides();
+  }, [refreshDayOverrides]);
+
   // ── Log ───────────────────────────────────────────────────────────────────
+
+  const refreshLogs = useCallback(async () => {
+    dispatch({ type: A.SET_LOGS, payload: await getRecentLogEntries() });
+  }, []);
 
   const logEntry = useCallback(async (entry) => {
     const saved = await addLogEntry(entry);
-    dispatch({ type: A.SET_LOGS, payload: await getRecentLogEntries() });
+    await refreshLogs();
     return saved;
-  }, []);
+  }, [refreshLogs]);
+
+  const editLogEntry = useCallback(async (id, changes) => {
+    await updateLogEntry(id, changes);
+    await refreshLogs();
+  }, [refreshLogs]);
+
+  const removeLogEntry = useCallback(async (id) => {
+    await deleteLogEntry(id);
+    await refreshLogs();
+  }, [refreshLogs]);
 
   // ── Energy ────────────────────────────────────────────────────────────────
 
@@ -227,10 +264,11 @@ export function TimeGuardianProvider({ children }) {
       getTasksForDate, createDailyTask, editDailyTask, removeDailyTask,
       toggleDailyTaskDone, toggleDailyTaskProtected,
       createRecurringTask, editRecurringTask, removeRecurringTask, toggleRecurring,
-      logEntry, checkInEnergy,
+      logEntry, editLogEntry, removeLogEntry, checkInEnergy,
+      setDayOverride, removeDayOverride,
       // helpers exposed for UI
-      isSecondWeekOfMonth, getSundayOfWeek,
-      SUNDAY_TYPE_LABELS, SATURDAY_TYPE_LABELS,
+      isSecondWeekOfMonth, getMondayOfWeek,
+      SUNDAY_TYPE_LABELS, SATURDAY_TYPE_LABELS, DAY_OVERRIDE_TYPES,
     }}>
       {children}
     </TimeGuardianContext.Provider>

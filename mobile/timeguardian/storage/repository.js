@@ -20,6 +20,18 @@ const KEYS = {
   SCHEDULE_CHANGE_LOG: 'tg:scheduleChangeLog',
   DAILY_TASKS        : 'tg:dailyTasks',
   RECURRING_TASKS    : 'tg:recurringTasks',
+  DAY_OVERRIDES      : 'tg:dayOverrides',
+};
+
+// Per-day override types — applied on top of the week plan for a single date
+export const DAY_OVERRIDE_TYPES = {
+  leave      : 'Leave / day off',
+  wfh        : 'Work from home',
+  half_day   : 'Half day',
+  karmayoga  : 'Karmayoga field service',
+  family     : 'Family commitment',
+  health     : 'Health / rest',
+  custom     : 'Custom',
 };
 
 export const SUNDAY_TYPE_LABELS = {
@@ -29,12 +41,14 @@ export const SUNDAY_TYPE_LABELS = {
   home_stay  : 'Home stay',
   karmayoga  : 'Karmayoga field service',
   open       : 'Open',
+  custom     : 'Custom…',
 };
 
 export const SATURDAY_TYPE_LABELS = {
   satori   : 'Satori — rest & recharge',
   karmayoga: 'Karmayoga field service',
   open     : 'Open',
+  custom   : 'Custom…',
 };
 
 export const SUNDAY_BLOCKS = {
@@ -77,30 +91,47 @@ export function getSundayOfWeek(dateStr) {
 }
 
 /**
- * Returns true if this date falls in the second week of its month.
- * The second Sat-Sun of every month is always Satori.
+ * Returns the Monday of the week containing dateStr.
+ * Week starts Monday. If dateStr is Sunday, goes back 6 days.
+ */
+export function getMondayOfWeek(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  const dow = date.getDay(); // 0=Sun
+  const daysToMonday = (dow === 0) ? 6 : dow - 1;
+  date.setDate(d - daysToMonday);
+  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+}
+
+/**
+ * Returns true if this date falls in the second week of its month
+ * (week anchored to Monday).
+ * The second Mon–Sun of every month is always Satori.
  */
 export function isSecondWeekOfMonth(dateStr) {
-  const [y, m, d]       = dateStr.split('-').map(Number);
-  const dow              = new Date(y, m - 1, d).getDay();
-  const firstDow         = new Date(y, m - 1, 1).getDay();
-  const firstOccurrence  = 1 + ((dow - firstDow + 7) % 7);
-  const secondOccurrence = firstOccurrence + 7;
-  return d >= secondOccurrence && d < secondOccurrence + 7;
+  const [y, m, d]      = dateStr.split('-').map(Number);
+  const dow             = new Date(y, m - 1, d).getDay();
+  // Find the first Monday of the month
+  const firstDow        = new Date(y, m - 1, 1).getDay();
+  const daysToFirstMon  = (firstDow === 0) ? 1 : (firstDow === 1) ? 0 : 8 - firstDow;
+  const firstMonday     = 1 + daysToFirstMon;
+  const secondMonday    = firstMonday + 7;
+  return d >= secondMonday && d < secondMonday + 7;
 }
 
 /**
  * Returns the week-of-month index (0-based) for a date.
- * Used to pick default rotation when no WeekPlan override exists.
+ * Weeks anchored to Monday.
  */
 export function getWeekOfMonthIndex(dateStr) {
-  const [y, m, d] = dateStr.split('-').map(Number);
-  const dow        = new Date(y, m - 1, d).getDay();
-  const sunday     = new Date(y, m - 1, d - dow);
-  const firstDow   = new Date(y, m - 1, 1).getDay();
-  const firstSun   = 1 + ((0 - firstDow + 7) % 7);
-  const sunDay     = sunday.getDate();
-  return Math.floor((sunDay - firstSun) / 7);
+  const [y, m, d]   = dateStr.split('-').map(Number);
+  const dow          = new Date(y, m - 1, d).getDay();
+  const daysToMon    = (dow === 0) ? 6 : dow - 1;
+  const monday       = new Date(y, m - 1, d - daysToMon);
+  const firstDow     = new Date(y, m - 1, 1).getDay();
+  const daysToFirstMon = (firstDow === 0) ? 1 : (firstDow === 1) ? 0 : 8 - firstDow;
+  const firstMon     = 1 + daysToFirstMon;
+  return Math.floor((monday.getDate() - firstMon) / 7);
 }
 
 // ─── RotationAnchor ───────────────────────────────────────────────────────────
@@ -310,7 +341,82 @@ export async function addLogEntry(entry) {
     return ne;
   } catch { return null; }
 }
-export async function getRecentLogEntries(limit = 40) { return (await getLogEntries()).slice(0, limit); }
+export async function updateLogEntry(id, changes) {
+  try {
+    const entries = await getLogEntries();
+    const updated = entries.map((e) => e.id === id ? { ...e, ...changes, updatedAt: new Date().toISOString() } : e);
+    await AsyncStorage.setItem(KEYS.LOG_ENTRIES, JSON.stringify(updated));
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * Soft-deletes a log entry — marks it deleted: true with a deletedAt timestamp.
+ * The entry is kept in storage and can be recovered via getDeletedLogEntries().
+ */
+export async function deleteLogEntry(id) {
+  try {
+    const entries = await getLogEntries();
+    const updated = entries.map((e) =>
+      e.id === id
+        ? { ...e, deleted: true, deletedAt: new Date().toISOString() }
+        : e
+    );
+    await AsyncStorage.setItem(KEYS.LOG_ENTRIES, JSON.stringify(updated));
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * Permanently removes a soft-deleted entry (hard delete — use only from admin/recovery).
+ */
+export async function purgeLogEntry(id) {
+  try {
+    const entries = await getLogEntries();
+    await AsyncStorage.setItem(KEYS.LOG_ENTRIES, JSON.stringify(entries.filter((e) => e.id !== id)));
+    return true;
+  } catch { return false; }
+}
+
+/** Returns entries that have been soft-deleted (for recovery UI if needed). */
+export async function getDeletedLogEntries() {
+  return (await getLogEntries()).filter((e) => e.deleted === true);
+}
+
+export async function getRecentLogEntries(limit = 40) {
+  // Exclude soft-deleted entries from active views
+  return (await getLogEntries()).filter((e) => !e.deleted).slice(0, limit);
+}
+
+// ─── DayOverrides ─────────────────────────────────────────────────────────────
+// Per-date overrides stored as { 'YYYY-MM-DD': { type, note, updatedAt } }
+
+export async function getDayOverrides() {
+  try { const v = await AsyncStorage.getItem(KEYS.DAY_OVERRIDES); return v ? JSON.parse(v) : {}; }
+  catch { return {}; }
+}
+
+export async function getDayOverride(dateStr) {
+  return (await getDayOverrides())[dateStr] || null;
+}
+
+export async function saveDayOverride(dateStr, type, note = '') {
+  try {
+    const overrides = await getDayOverrides();
+    overrides[dateStr] = { type, note, updatedAt: new Date().toISOString() };
+    await AsyncStorage.setItem(KEYS.DAY_OVERRIDES, JSON.stringify(overrides));
+    return overrides[dateStr];
+  } catch { return null; }
+}
+
+export async function clearDayOverride(dateStr) {
+  try {
+    const overrides = await getDayOverrides();
+    delete overrides[dateStr];
+    await AsyncStorage.setItem(KEYS.DAY_OVERRIDES, JSON.stringify(overrides));
+    return true;
+  } catch { return false; }
+}
 
 // ─── EnergyEntries ────────────────────────────────────────────────────────────
 
