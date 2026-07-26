@@ -3,41 +3,32 @@
  *
  * Reusable playback control: play/pause, -10s / +10s buttons, a draggable
  * scrub bar, current/total time labels, and an optional speed toggle.
- * Drives itself off the shared `useAudioPlayer` hook so it can be dropped
- * into any row that represents a playable file.
+ *
+ * This component manages its OWN scoped subscription to the shared player
+ * (via `useAudioPlayer(uri)`) instead of receiving a `player` prop from a
+ * parent. That's deliberate: it means dropping this into every row of a
+ * long list is cheap — a tick from a row that ISN'T this one never causes
+ * this instance to re-render (see useAudioPlayer.js for how the scoping
+ * works). Only `stop()`/`play()`/etc need to be called from outside (e.g.
+ * before a delete/rename); the screen can get those via `useAudioPlayer()`
+ * with no uri, which never subscribes to re-renders either.
  *
  * Two layouts:
- *  - size="compact" (default) — everything on one row. Used in list rows
- *    (converter outputs, converted-files entries).
- *  - size="large" — controls (RW/Play/FF/Speed) on their own centered row
- *    with bigger touch targets, slider + time labels on the row below.
- *    Used for the editor's main timeline.
+ *  - size="compact" (default) — everything on one row. Used in list rows.
+ *  - size="large" — controls on their own centered row with bigger touch
+ *    targets, slider + time labels below. Used for the editor's timeline.
  *
- * ── Why dragging used to fail (fixed here, at the root) ──────────────────────
- *
- * 1. Duration was unknown until the file had actually started loading, i.e.
- *    until you pressed Play once. Before that, the slider's range was
- *    effectively 0-1ms, so dragging looked completely dead. Fixed by having
- *    this component probe the file's duration itself on mount (a silent,
- *    no-playback metadata read) instead of depending on live player state.
- *
- * 2. Inside a ScrollView/FlatList, the parent can steal the touch-move
- *    gesture before the Slider's own gesture responder claims it — a classic
- *    RN nested-responder race. Reactive fixes (disabling scroll only once the
- *    slider reports a drag started) don't reliably work because that event
- *    never fires if the parent won the race first. Fixed by wrapping the
- *    Slider in a View that proactively claims the responder on first touch
- *    (onStartShouldSetResponder / onMoveShouldSetResponderCapture), which
- *    wins the negotiation before the ancestor scroll view gets a chance.
- *
- * `onDragStart`/`onDragEnd` are still exposed so a parent can *also* disable
- * its own scrolling as a second line of defense — harmless to keep, not the
- * primary fix anymore.
+ * Drag fix notes (both are needed, at the root, not reactively):
+ *  1. Duration is probed by this component itself on mount (silent,
+ *     no-playback metadata read) so the slider has a real range immediately
+ *     — it used to be unknown until the file had been played once.
+ *  2. The slider is wrapped in a View that proactively claims the touch
+ *     responder on first contact, so an ancestor ScrollView/FlatList can't
+ *     steal the drag gesture before the slider does.
  *
  * Usage:
- *   const player = useAudioPlayer();
- *   <PlaybackBar player={player} uri={item.fileUri} color={Colors.primary} />
- *   <PlaybackBar player={player} uri={fileUri} size="large" showSpeed />
+ *   <PlaybackBar uri={item.fileUri} color={Colors.primary} />
+ *   <PlaybackBar uri={fileUri} size="large" showSpeed />
  */
 
 import React, { useCallback, useState, useEffect } from 'react';
@@ -45,6 +36,7 @@ import { View, Text, TouchableOpacity, ActivityIndicator, StyleSheet } from 'rea
 import Slider from '@react-native-community/slider';
 import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
+import { useAudioPlayer } from '../hooks/useAudioPlayer';
 
 const SKIP_MS = 10000;
 const SPEED_CYCLE = [1, 1.5, 2, 0.5];
@@ -63,7 +55,6 @@ function formatRate(rate) {
 }
 
 export default function PlaybackBar({
-  player,
   uri,
   color = '#3B82F6',
   trackColor = '#E2E8F0',
@@ -74,6 +65,7 @@ export default function PlaybackBar({
   onDragStart,
   onDragEnd,
 }) {
+  const player = useAudioPlayer(uri);
   const isActive  = player.playingUri === uri;
   const isPlaying = isActive && player.isPlaying;
   const isLoading = isActive && player.isLoading;

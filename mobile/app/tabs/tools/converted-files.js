@@ -73,7 +73,6 @@ const FileItem = React.memo(function FileItem({
   item,
   isMissing,
   isLast,
-  player,
   onDragStart,
   onDragEnd,
   onOpen,
@@ -117,7 +116,6 @@ const FileItem = React.memo(function FileItem({
           </TouchableOpacity>
         ) : (
           <PlaybackBar
-            player={player}
             uri={item.fileUri}
             color={accentColor}
             disabled={isMissing}
@@ -142,10 +140,15 @@ const FileItem = React.memo(function FileItem({
 
 export default function ConvertedFilesScreen() {
   const router = useRouter();
+  const player = useAudioPlayer(); // unscoped — action functions only, no re-render subscription
   const [entries, setEntries]       = useState([]);
   const [loading, setLoading]       = useState(true);
   const [search, setSearch]         = useState('');
   const [missingIds, setMissingIds] = useState(new Set());
+
+  // Disabled while dragging a row's scrub bar — otherwise the FlatList steals
+  // the horizontal drag gesture and the slider never moves.
+  const [scrollEnabled, setScrollEnabled] = useState(true);
 
   // Rename modal
   const [renameVisible, setRenameVisible] = useState(false);
@@ -153,11 +156,6 @@ export default function ConvertedFilesScreen() {
   const [renameInput, setRenameInput]     = useState('');
   const [renameBusy, setRenameBusy]       = useState(false);
   const [renameError, setRenameError]     = useState('');
-
-  const player = useAudioPlayer();
-  // Disabled while dragging a row's scrub bar — otherwise the FlatList steals
-  // the horizontal drag gesture and the slider never moves.
-  const [scrollEnabled, setScrollEnabled] = useState(true);
 
   // ── data loading ────────────────────────────────────────────────────────────
 
@@ -291,7 +289,7 @@ export default function ConvertedFilesScreen() {
       ],
       { cancelable: true }
     );
-  }, [player.stop]);
+  }, [player]);
 
   const handleRemoveBroken = useCallback((entry) => {
     Alert.alert(
@@ -338,7 +336,6 @@ export default function ConvertedFilesScreen() {
         item={item}
         isMissing={isMissing}
         isLast={isLast}
-        player={player}
         onDragStart={() => setScrollEnabled(false)}
         onDragEnd={() => setScrollEnabled(true)}
         onOpen={() => handleOpen(item)}
@@ -349,10 +346,7 @@ export default function ConvertedFilesScreen() {
         onRemoveBroken={() => handleRemoveBroken(item)}
       />
     );
-  }, [
-    missingIds, filtered.length, player,
-    handleOpen, handleShare, openRenameModal, handleEdit, handleDelete, handleRemoveBroken,
-  ]);
+  }, [missingIds, filtered.length, handleOpen, handleShare, openRenameModal, handleEdit, handleDelete, handleRemoveBroken]);
 
   // ── render ───────────────────────────────────────────────────────────────────
 
