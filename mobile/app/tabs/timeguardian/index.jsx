@@ -21,11 +21,12 @@ import {
   findConflict, DURATION_PRESETS, WHOLE_DAY_START, WHOLE_DAY_END, computeEndTime,
 } from '../../../timeguardian/logic/conflict';
 import {
-  TGColors, TGCategoryColors, TGEnergyColors, TGEnergyLabels, DAY_LABELS_FULL,
+  TGColors, TGCategoryColors, TGEnergyColors, TGEnergyLabels, TGSessionColors, DAY_LABELS_FULL,
 } from '../../../timeguardian/theme/tokens';
 import {
   SUNDAY_TYPE_LABELS, SATURDAY_TYPE_LABELS,
   isSecondWeekOfMonth, getMondayOfWeek,
+  SESSION_KEYS, SESSION_LABELS, SESSION_ICONS, getSessionForTime, getSessionBounds,
 } from '../../../timeguardian/storage/repository';
 
 // ─── Anchor Prompt ────────────────────────────────────────────────────────────
@@ -69,47 +70,243 @@ function AnchorPrompt({ onSave }) {
   );
 }
 
-// ─── Energy Check-in ─────────────────────────────────────────────────────────
+// ─── Session Energy Card ──────────────────────────────────────────────────────
 
-function EnergyCheckIn({ todayEnergy, onCheckIn }) {
-  const [pendingLevel, setPendingLevel] = useState(null);
-  const causes = ['Work', 'Family', 'Karmayoga', 'Health', 'Other'];
+const CAUSES = ['Work', 'Family', 'Karmayoga', 'Health', 'Other'];
 
-  const handleLevel = (l) => {
-    setPendingLevel(l);
-    if (l >= 3) { onCheckIn(l, null); setPendingLevel(null); }
+// Weights for overall day score — evening matters most, morning least
+const SESSION_WEIGHTS = { morning: 1, work_am: 1.5, work_pm: 1.5, evening: 2 };
+
+/**
+ * Compute a weighted day score from all sessions that have entries.
+ * Returns null if no entries yet, 1-5 otherwise.
+ */
+function computeDayScore(entryBySession) {
+  let weightedSum = 0;
+  let totalWeight = 0;
+  SESSION_KEYS.forEach((s) => {
+    const e = entryBySession[s];
+    if (e) {
+      const w = SESSION_WEIGHTS[s];
+      weightedSum += e.level * w;
+      totalWeight += w;
+    }
+  });
+  if (totalWeight === 0) return null;
+  return Math.round((weightedSum / totalWeight) * 10) / 10; // one decimal
+}
+
+/** Overall label based on score */
+function dayScoreLabel(score) {
+  if (score === null) return null;
+  if (score >= 4.5) return 'Excellent day';
+  if (score >= 3.5) return 'Good day';
+  if (score >= 2.5) return 'Steady day';
+  if (score >= 1.5) return 'Tough day';
+  return 'Draining day';
+}
+
+/** How many sessions contributed to the score */
+function scoreBreakdown(entryBySession) {
+  return SESSION_KEYS
+    .filter((s) => entryBySession[s])
+    .map((s) => `${SESSION_ICONS[s]} ${entryBySession[s].level}`)
+    .join('  ');
+}
+
+function SessionEnergyCard({ todayEntries, currentWorkHours, onCheckIn }) {
+  const [activeSession,  setActiveSession]  = useState(null);
+  const [pendingLevel,   setPendingLevel]   = useState(null);
+  const [pendingSession, setPendingSession] = useState(null);
+
+  const nowSession = useMemo(() => {
+    const now = new Date();
+    const t   = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    return getSessionForTime(t, currentWorkHours);
+  }, [currentWorkHours]);
+
+  const entryBySession = useMemo(() => {
+    const map = {};
+    (todayEntries || []).forEach((e) => {
+      const s = e.session || getSessionForTime(e.time, currentWorkHours);
+      if (!map[s] || e.time > map[s].time) map[s] = { ...e, session: s };
+    });
+    return map;
+  }, [todayEntries, currentWorkHours]);
+
+  const dayScore   = useMemo(() => computeDayScore(entryBySession), [entryBySession]);
+  const entryCount = Object.keys(entryBySession).length;
+  const scoreColor = dayScore !== null ? TGEnergyColors[Math.round(dayScore)] : TGColors.faint;
+
+  const handleLevelTap = (session, level) => {
+    if (level >= 3) {
+      onCheckIn(level, null, session);
+      setActiveSession(null); setPendingLevel(null); setPendingSession(null);
+    } else {
+      setPendingLevel(level); setPendingSession(session);
+    }
+  };
+
+  const handleCause = (cause) => {
+    onCheckIn(pendingLevel, cause, pendingSession);
+    setActiveSession(null); setPendingLevel(null); setPendingSession(null);
   };
 
   return (
-    <View style={styles.energyCard}>
-      <Text style={styles.energyHeading}>
-        How are you today?
-        {todayEnergy
-          ? <Text style={{ color: TGEnergyColors[todayEnergy.level], fontWeight: '600' }}>
-              {'  '}{TGEnergyLabels[todayEnergy.level]}
+    <View style={styles.sessionCard}>
+      {/* ── Day overall summary ── */}
+      <View style={styles.sessionDaySummary}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.sessionCardTitle}>How's your day going?</Text>
+          {dayScore !== null && (
+            <Text style={[styles.sessionDayLabel, { color: scoreColor }]}>
+              {dayScoreLabel(dayScore)}
             </Text>
-          : null}
-      </Text>
-      <View style={styles.chipRow}>
-        {[1,2,3,4,5].map((l) => (
-          <TouchableOpacity key={l} style={[styles.energyBtn, { borderColor: TGEnergyColors[l] }]} onPress={() => handleLevel(l)}>
-            <Text style={[styles.energyBtnText, { color: TGEnergyColors[l] }]}>{TGEnergyLabels[l]}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-      {pendingLevel !== null && pendingLevel <= 2 && (
-        <View style={{ marginTop: 10 }}>
-          <Text style={styles.fieldLabel}>What's causing this?</Text>
-          <View style={styles.chipRow}>
-            {causes.map((c) => (
-              <TouchableOpacity key={c} style={styles.causeChip}
-                onPress={() => { onCheckIn(pendingLevel, c); setPendingLevel(null); }}>
-                <Text style={styles.causeChipText}>{c}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+          )}
         </View>
-      )}
+        {dayScore !== null ? (
+          <View style={[styles.sessionDayScoreBadge, { borderColor: scoreColor }]}>
+            <Text style={[styles.sessionDayScoreNum, { color: scoreColor }]}>
+              {dayScore.toFixed(1)}
+            </Text>
+            <Text style={styles.sessionDayScoreDenom}>/5</Text>
+          </View>
+        ) : (
+          <Text style={styles.sessionDayScoreEmpty}>
+            {entryCount === 0 ? 'No check-ins yet' : `${entryCount}/4 sessions`}
+          </Text>
+        )}
+      </View>
+
+      {/* Session progress dots */}
+      <View style={styles.sessionDotsRow}>
+        {SESSION_KEYS.map((s) => {
+          const e = entryBySession[s];
+          const c = TGSessionColors[s];
+          return (
+            <View key={s} style={styles.sessionDotItem}>
+              <View style={[
+                styles.sessionDot,
+                e ? { backgroundColor: TGEnergyColors[e.level] } : { backgroundColor: TGColors.line },
+                s === nowSession && !e && { borderColor: c, borderWidth: 1.5 },
+              ]} />
+              <Text style={[styles.sessionDotLabel, e && { color: TGEnergyColors[e.level] }]}>
+                {SESSION_ICONS[s]}
+              </Text>
+            </View>
+          );
+        })}
+        <View style={styles.sessionDotFill} />
+        {entryCount > 0 && entryCount < 4 && (
+          <Text style={styles.sessionDotStatus}>{entryCount}/4</Text>
+        )}
+        {entryCount === 4 && (
+          <Text style={[styles.sessionDotStatus, { color: TGColors.sage }]}>Complete ✓</Text>
+        )}
+      </View>
+
+      {/* ── Session rows ── */}
+      {SESSION_KEYS.map((sKey) => {
+        const entry      = entryBySession[sKey];
+        const bounds     = getSessionBounds(sKey, currentWorkHours);
+        const isNow      = sKey === nowSession;
+        const isOpen     = activeSession === sKey;
+        const color      = TGSessionColors[sKey];
+        const isPending  = pendingSession === sKey;
+
+        return (
+          <View key={sKey} style={[styles.sessionRow, isNow && styles.sessionRowActive]}>
+            <View style={styles.sessionMeta}>
+              <View style={styles.sessionNameRow}>
+                <Text style={styles.sessionIcon}>{SESSION_ICONS[sKey]}</Text>
+                <View>
+                  <Text style={[styles.sessionName, isNow && { color }]}>
+                    {SESSION_LABELS[sKey]}
+                    {isNow ? <Text style={styles.sessionNowTag}>  · now</Text> : null}
+                  </Text>
+                  <Text style={styles.sessionTime}>{bounds.start} – {bounds.end}</Text>
+                </View>
+              </View>
+              {entry && !isOpen && (
+                <View style={styles.sessionLastEntry}>
+                  <Text style={[styles.sessionLastLevel, { color: TGEnergyColors[entry.level] }]}>
+                    {TGEnergyLabels[entry.level]}
+                  </Text>
+                  {entry.cause
+                    ? <Text style={styles.sessionLastCause}>· {entry.cause}</Text>
+                    : null}
+                  <Text style={styles.sessionLastTime}>{entry.time}</Text>
+                </View>
+              )}
+            </View>
+
+            {isOpen ? (
+              <View style={styles.sessionInputArea}>
+                {isPending ? (
+                  <View>
+                    <Text style={styles.sessionCauseLabel}>What's causing this?</Text>
+                    <View style={styles.sessionCauseRow}>
+                      {CAUSES.map((c) => (
+                        <TouchableOpacity key={c}
+                          style={[styles.sessionCauseChip, { borderColor: color }]}
+                          onPress={() => handleCause(c)}>
+                          <Text style={[styles.sessionCauseChipText, { color }]}>{c}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.sessionLevelRow}>
+                    {[1,2,3,4,5].map((l) => {
+                      const isSelected = entry && entry.level === l;
+                      return (
+                        <TouchableOpacity key={l}
+                          style={[
+                            styles.sessionLevelBtn,
+                            { borderColor: TGEnergyColors[l] },
+                            isSelected && { backgroundColor: TGEnergyColors[l] },
+                          ]}
+                          onPress={() => handleLevelTap(sKey, l)}>
+                          <Text style={[
+                            styles.sessionLevelText,
+                            { color: isSelected ? TGColors.background : TGEnergyColors[l] },
+                            isSelected && { fontWeight: '800' },
+                          ]}>
+                            {TGEnergyLabels[l]}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
+                <TouchableOpacity
+                  style={styles.sessionCancelBtn}
+                  onPress={() => { setActiveSession(null); setPendingLevel(null); setPendingSession(null); }}>
+                  <Text style={styles.sessionCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[
+                  styles.sessionCheckBtn,
+                  entry && { borderColor: TGEnergyColors[entry.level] },
+                  isNow && !entry && { borderColor: color },
+                ]}
+                onPress={() => { setActiveSession(sKey); setPendingLevel(null); setPendingSession(null); }}>
+                <Text style={[
+                  styles.sessionCheckBtnText,
+                  entry && { color: TGEnergyColors[entry.level], fontWeight: '700' },
+                  isNow && !entry && { color },
+                ]}>
+                  {entry
+                    ? `${entry.level}/5  ${TGEnergyLabels[entry.level]}`
+                    : isNow ? 'Check in' : 'Add'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -858,7 +1055,7 @@ export default function TimeGuardianHome() {
   const {
     isLoading, anchorDate, customBlocks, weekPlans,
     currentWorkHours, currentRotationDefaults,
-    todayEnergy, saveAnchorDate, logEntry, checkInEnergy, setWeekPlan,
+    todaySessionEntries, saveAnchorDate, logEntry, checkInEnergy, setWeekPlan,
     getTasksForDate,
   } = useTimeGuardian();
 
@@ -912,7 +1109,13 @@ export default function TimeGuardianHome() {
         }}
         ListHeaderComponent={
           <>
-            {isThisWeek && <EnergyCheckIn todayEnergy={todayEnergy} onCheckIn={checkInEnergy} />}
+            {isThisWeek && (
+              <SessionEnergyCard
+                todayEntries={todaySessionEntries}
+                currentWorkHours={currentWorkHours}
+                onCheckIn={(level, cause, session) => checkInEnergy(level, cause, session)}
+              />
+            )}
 
             {/* Week navigation */}
             <View style={styles.weekNav}>
@@ -1001,12 +1204,45 @@ const styles = StyleSheet.create({
   anchorTitle: { fontSize: 26, color: TGColors.ink, fontWeight: '700', marginBottom: 14 },
   anchorBody : { fontSize: 14, color: TGColors.muted, lineHeight: 22, marginBottom: 24 },
 
-  energyCard   : { backgroundColor: TGColors.surface, borderRadius: 12, padding: 16, marginBottom: 16 },
-  energyHeading: { color: TGColors.muted, fontSize: 13, marginBottom: 12 },
-  energyBtn    : { borderWidth: 1, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6 },
-  energyBtnText: { fontSize: 12, fontWeight: '500' },
-  causeChip    : { backgroundColor: TGColors.surfaceRaised, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6 },
-  causeChipText: { color: TGColors.ink, fontSize: 12 },
+  // Session energy card
+  sessionCard          : { backgroundColor: TGColors.surface, borderRadius: 12, padding: 14, marginBottom: 16 },
+  sessionDaySummary    : { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  sessionCardTitle     : { color: TGColors.muted, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 2 },
+  sessionDayLabel      : { fontSize: 15, fontWeight: '700' },
+  sessionDayScoreBadge : { borderWidth: 2, borderRadius: 28, width: 56, height: 56, alignItems: 'center', justifyContent: 'center', flexDirection: 'row' },
+  sessionDayScoreNum   : { fontSize: 18, fontWeight: '800' },
+  sessionDayScoreDenom : { color: TGColors.faint, fontSize: 10, alignSelf: 'flex-end', marginBottom: 3 },
+  sessionDayScoreEmpty : { color: TGColors.faint, fontSize: 11 },
+  sessionDotsRow       : { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: TGColors.line },
+  sessionDotItem       : { alignItems: 'center', gap: 3 },
+  sessionDot           : { width: 10, height: 10, borderRadius: 5 },
+  sessionDotLabel      : { fontSize: 10, color: TGColors.faint },
+  sessionDotFill       : { flex: 1 },
+  sessionDotStatus     : { color: TGColors.muted, fontSize: 11, fontWeight: '500' },
+  sessionRow           : { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: TGColors.line },
+  sessionRowActive     : { backgroundColor: TGColors.surfaceRaised, marginHorizontal: -14, paddingHorizontal: 14, borderRadius: 8, borderBottomWidth: 0, marginBottom: 1 },
+  sessionMeta          : { flex: 1 },
+  sessionNameRow       : { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 3 },
+  sessionIcon          : { fontSize: 16 },
+  sessionName          : { color: TGColors.ink, fontSize: 13, fontWeight: '600' },
+  sessionNowTag        : { fontSize: 10, fontWeight: '500', color: TGColors.gold },
+  sessionTime          : { color: TGColors.faint, fontSize: 10 },
+  sessionLastEntry     : { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2, paddingLeft: 24 },
+  sessionLastLevel     : { fontSize: 12, fontWeight: '700' },
+  sessionLastCause     : { color: TGColors.muted, fontSize: 11 },
+  sessionLastTime      : { color: TGColors.faint, fontSize: 10, marginLeft: 'auto' },
+  sessionCheckBtn      : { borderWidth: 1, borderColor: TGColors.line, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 5, minWidth: 64, alignItems: 'center' },
+  sessionCheckBtnText  : { color: TGColors.faint, fontSize: 12, fontWeight: '500' },
+  sessionInputArea     : { flex: 1, alignItems: 'flex-end' },
+  sessionLevelRow      : { flexDirection: 'row', flexWrap: 'wrap', gap: 5, justifyContent: 'flex-end' },
+  sessionLevelBtn      : { borderWidth: 1, borderRadius: 14, paddingHorizontal: 8, paddingVertical: 4 },
+  sessionLevelText     : { fontSize: 10, fontWeight: '600' },
+  sessionCauseLabel    : { color: TGColors.muted, fontSize: 10, marginBottom: 5, textAlign: 'right' },
+  sessionCauseRow      : { flexDirection: 'row', flexWrap: 'wrap', gap: 5, justifyContent: 'flex-end' },
+  sessionCauseChip     : { borderWidth: 1, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3 },
+  sessionCauseChipText : { fontSize: 10, fontWeight: '500' },
+  sessionCancelBtn     : { marginTop: 6 },
+  sessionCancelText    : { color: TGColors.faint, fontSize: 10 },
 
   weekNav       : { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
   navArrowBtn   : { padding: 10 },

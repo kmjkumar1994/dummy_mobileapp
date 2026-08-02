@@ -12,7 +12,8 @@ import {
   getScheduleChangeLog, addScheduleChangeLog,
   getCustomBlocks, addCustomBlock, updateCustomBlock, deleteCustomBlock, toggleCustomBlockActive,
   addLogEntry, getRecentLogEntries, updateLogEntry, deleteLogEntry,
-  getEnergyEntries, getEnergyChartData, upsertEnergyEntry,
+  getEnergyEntries, getEnergyChartData, getEnergyEntriesForDate, upsertEnergyEntry,
+  getDailySummaries, upsertDailySummary, getDailySummaryChartData,
   getDailyTasksForDate, addDailyTask, updateDailyTask, deleteDailyTask,
   getRecurringTasks, addRecurringTask, updateRecurringTask, deleteRecurringTask,
   toggleRecurringTaskActive, getRecurringTasksForDay,
@@ -20,27 +21,30 @@ import {
   DEFAULT_WORK_HOURS, DEFAULT_ROTATION_DEFAULTS,
   getMondayOfWeek, isSecondWeekOfMonth,
   SUNDAY_TYPE_LABELS, SATURDAY_TYPE_LABELS, DAY_OVERRIDE_TYPES,
+  getSessionForTime,
 } from '../timeguardian/storage/repository';
 import { todayStr, nowTimeStr, getDayOfWeek } from '../timeguardian/logic/dayBlocks';
 
 const TimeGuardianContext = createContext(null);
 
 const initialState = {
-  isLoading          : true,
-  anchorDate         : null,
-  currentWorkHours   : DEFAULT_WORK_HOURS,
-  workHoursHistory   : [],
-  currentRotationDefaults: DEFAULT_ROTATION_DEFAULTS,
-  rotationDefaultsHistory: [],
-  weekPlans          : {},
-  scheduleChangeLog  : [],
-  customBlocks       : [],
-  recurringTasks     : [],
-  logEntries         : [],
-  energyEntries      : [],
-  energyChartData    : [],
-  todayEnergy        : null,
-  dayOverrides       : {},
+  isLoading               : true,
+  anchorDate              : null,
+  currentWorkHours        : DEFAULT_WORK_HOURS,
+  workHoursHistory        : [],
+  currentRotationDefaults : DEFAULT_ROTATION_DEFAULTS,
+  rotationDefaultsHistory : [],
+  weekPlans               : {},
+  scheduleChangeLog       : [],
+  customBlocks            : [],
+  recurringTasks          : [],
+  logEntries              : [],
+  energyEntries           : [],
+  energyChartData         : [],
+  todayEnergy             : null,
+  todaySessionEntries     : [],   // all energy entries for today, one per session
+  dailySummaries          : {},   // keyed by date — combined weighted score per day
+  dayOverrides            : {},
 };
 
 const A = {
@@ -85,7 +89,7 @@ export function TimeGuardianProvider({ children }) {
         weekPlans, scheduleChangeLog,
         blocks, recurringTasks, logs,
         energyEntries, energyChartData,
-        dayOverrides,
+        dailySummaries, dayOverrides,
       ] = await Promise.all([
         getRotationAnchor(),
         getCurrentWorkHours(),
@@ -99,12 +103,14 @@ export function TimeGuardianProvider({ children }) {
         getRecentLogEntries(),
         getEnergyEntries(),
         getEnergyChartData(7),
+        getDailySummaries(),
         getDayOverrides(),
       ]);
 
-      const today       = todayStr();
-      const todayList   = energyEntries.filter((e) => e.date === today);
-      const todayEnergy = todayList.length > 0 ? todayList.sort((a,b) => a.time > b.time ? -1 : 1)[0] : null;
+      const today               = todayStr();
+      const todayList           = energyEntries.filter((e) => e.date === today);
+      const todayEnergy         = todayList.length > 0 ? todayList.sort((a,b) => a.time > b.time ? -1 : 1)[0] : null;
+      const todaySessionEntries = todayList;
 
       dispatch({
         type: A.BOOTSTRAP,
@@ -115,6 +121,7 @@ export function TimeGuardianProvider({ children }) {
           weekPlans, scheduleChangeLog,
           customBlocks: blocks, recurringTasks,
           logEntries: logs, energyEntries, energyChartData, todayEnergy,
+          todaySessionEntries, dailySummaries,
           dayOverrides,
         },
       });
@@ -245,14 +252,22 @@ export function TimeGuardianProvider({ children }) {
 
   // ── Energy ────────────────────────────────────────────────────────────────
 
-  const checkInEnergy = useCallback(async (level, cause = null) => {
-    const today = todayStr();
-    await upsertEnergyEntry(today, nowTimeStr(), level, cause);
-    const [energyEntries, energyChartData] = await Promise.all([getEnergyEntries(), getEnergyChartData(7)]);
-    const todayList   = energyEntries.filter((e) => e.date === today);
-    const todayEnergy = todayList.length > 0 ? todayList.sort((a,b) => a.time > b.time ? -1 : 1)[0] : null;
-    dispatch({ type: A.SET_ENERGY, payload: { energyEntries, energyChartData, todayEnergy } });
-  }, []);
+  const checkInEnergy = useCallback(async (level, cause = null, session = null) => {
+    const today     = todayStr();
+    const time      = nowTimeStr();
+    const workHours = state.currentWorkHours;
+    await upsertEnergyEntry(today, time, level, cause, session, workHours);
+    await upsertDailySummary(today);
+    const [energyEntries, energyChartData, dailySummaries] = await Promise.all([
+      getEnergyEntries(),
+      getEnergyChartData(7),
+      getDailySummaries(),
+    ]);
+    const todayList           = energyEntries.filter((e) => e.date === today);
+    const todayEnergy         = todayList.length > 0 ? todayList.sort((a, b) => a.time > b.time ? -1 : 1)[0] : null;
+    const todaySessionEntries = todayList;
+    dispatch({ type: A.SET_ENERGY, payload: { energyEntries, energyChartData, todayEnergy, todaySessionEntries, dailySummaries } });
+  }, [state.currentWorkHours]);
 
   return (
     <TimeGuardianContext.Provider value={{
@@ -266,9 +281,11 @@ export function TimeGuardianProvider({ children }) {
       createRecurringTask, editRecurringTask, removeRecurringTask, toggleRecurring,
       logEntry, editLogEntry, removeLogEntry, checkInEnergy,
       setDayOverride, removeDayOverride,
+      getDailySummaryChartData,
       // helpers exposed for UI
       isSecondWeekOfMonth, getMondayOfWeek,
       SUNDAY_TYPE_LABELS, SATURDAY_TYPE_LABELS, DAY_OVERRIDE_TYPES,
+      getSessionForTime,
     }}>
       {children}
     </TimeGuardianContext.Provider>
