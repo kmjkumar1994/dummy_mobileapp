@@ -1,82 +1,217 @@
 /**
- * ledger.jsx — v2
- * Fixed header (never scrolls), full detail in change history.
+ * ledger.jsx — v3
+ * Energy summary with range picker: 7 days, 30 days, This Month, Custom from/to.
+ * Per-day detail list shows each session's individual level.
  */
 
 import React, { useMemo, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity } from 'react-native';
+import {
+  View, Text, ScrollView, StyleSheet, TouchableOpacity, Platform,
+} from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTimeGuardian } from '../../../context/TimeGuardianContext';
 import { TGColors, TGOutcomeColors, TGEnergyColors, TGEnergyLabels } from '../../../timeguardian/theme/tokens';
 import { toDisplayDate } from '../../../timeguardian/logic/dayBlocks';
-import { SUNDAY_TYPE_LABELS, SATURDAY_TYPE_LABELS } from '../../../timeguardian/storage/repository';
+import {
+  SUNDAY_TYPE_LABELS, SATURDAY_TYPE_LABELS,
+  SESSION_KEYS, SESSION_ICONS,
+} from '../../../timeguardian/storage/repository';
 
+// ─── Date helpers ─────────────────────────────────────────────────────────────
+
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function addDays(iso, n) {
+  const d = new Date(iso + 'T00:00:00');
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function thisMonthRange() {
+  const d = new Date();
+  const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0');
+  const last = new Date(y, d.getMonth()+1, 0).getDate();
+  return { from: `${y}-${m}-01`, to: `${y}-${m}-${String(last).padStart(2,'0')}` };
+}
+function isoToDate(iso) {
+  const [y,mo,day] = iso.split('-').map(Number);
+  return new Date(y, mo-1, day);
+}
 function formatDateTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
-  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-    + '  ' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' })
+    + '  ' + d.toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' });
 }
-
 function fieldLabel(f) {
-  return ({ work_hours: 'Work Hours', rotation_defaults: 'Rotation Defaults', week_plan: 'Week Plan', anchor_date: 'Anchor Date' })[f] || f;
+  return ({ work_hours:'Work Hours', rotation_defaults:'Rotation Defaults',
+    week_plan:'Week Plan', anchor_date:'Anchor Date' })[f] || f;
 }
-
 function formatOldNew(field, oldVal, newVal) {
   if (field === 'work_hours') {
     const fmt = (v) => v ? `${v.workStart}–${v.workEnd}, overtime until ${v.overtimeEnd}` : 'not set';
     return { before: fmt(oldVal), after: fmt(newVal) };
   }
-  if (field === 'anchor_date') {
+  if (field === 'anchor_date')
     return { before: oldVal ? toDisplayDate(oldVal) : 'not set', after: newVal ? toDisplayDate(newVal) : 'not set' };
-  }
   if (field === 'week_plan') {
     const fmt = (v) => v
-      ? `Sunday: ${SUNDAY_TYPE_LABELS[v.sundayType] || v.sundayType}, Saturday: ${SATURDAY_TYPE_LABELS[v.saturdayType] || v.saturdayType}`
+      ? `Sunday: ${SUNDAY_TYPE_LABELS[v.sundayType]||v.sundayType}, Saturday: ${SATURDAY_TYPE_LABELS[v.saturdayType]||v.saturdayType}`
       : 'default rotation';
     return { before: fmt(oldVal), after: fmt(newVal) };
   }
   if (field === 'rotation_defaults') {
     const fmt = (v) => Array.isArray(v)
-      ? v.map((s) => `W${s.weekIndex}: ${SUNDAY_TYPE_LABELS[s.sundayType] || s.sundayType}`).join(', ')
+      ? v.map((s) => `W${s.weekIndex}: ${SUNDAY_TYPE_LABELS[s.sundayType]||s.sundayType}`).join(', ')
       : 'unknown';
     return { before: fmt(oldVal), after: fmt(newVal) };
   }
   return {
     before: typeof oldVal === 'object' ? JSON.stringify(oldVal) : String(oldVal ?? 'not set'),
-    after : typeof newVal === 'object' ? JSON.stringify(newVal) : String(newVal ?? 'not set'),
+    after:  typeof newVal === 'object' ? JSON.stringify(newVal) : String(newVal ?? 'not set'),
   };
 }
 
-function StatTile({ label, count, color }) {
+// ─── Range picker presets ─────────────────────────────────────────────────────
+
+const PRESETS = [
+  { key: '7d',    label: '7 days'     },
+  { key: '30d',   label: '30 days'    },
+  { key: 'month', label: 'This month' },
+  { key: 'custom',label: 'Custom'     },
+];
+
+function DateField({ label, value, onChange }) {
+  const [show, setShow] = useState(false);
   return (
-    <View style={[styles.statTile, { borderTopColor: color }]}>
-      <Text style={[styles.statCount, { color }]}>{count}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
+    <View style={styles.dpField}>
+      <Text style={styles.dpLabel}>{label}</Text>
+      <TouchableOpacity style={styles.dpBtn} onPress={() => setShow(true)}>
+        <Text style={styles.dpBtnText}>{toDisplayDate(value)}</Text>
+      </TouchableOpacity>
+      {show && (
+        <DateTimePicker
+          value={isoToDate(value)}
+          mode="date"
+          display={Platform.OS === 'ios' ? 'inline' : 'default'}
+          onChange={(e, sel) => {
+            setShow(false);
+            if (sel) {
+              const y = sel.getFullYear();
+              const m = String(sel.getMonth()+1).padStart(2,'0');
+              const d = String(sel.getDate()).padStart(2,'0');
+              onChange(`${y}-${m}-${d}`);
+            }
+          }}
+        />
+      )}
     </View>
   );
 }
 
+// ─── Energy chart (horizontal scroll for large ranges) ───────────────────────
+
 function EnergyChart({ data }) {
-  if (!data || data.length === 0) return <Text style={styles.empty}>No energy check-ins yet.</Text>;
+  if (!data || data.length === 0)
+    return <Text style={styles.empty}>No check-ins in this range.</Text>;
   const MAX_H = 80;
   return (
-    <View style={styles.chart}>
-      {data.map((e, i) => {
-        // data items are daily summaries: { date, score, entryCount, sessions }
-        // fall back to e.level for legacy energyChartData items
-        const rawScore = e.score ?? e.level ?? 0;
-        const rounded  = Math.round(rawScore);
-        const barH     = (rawScore / 5) * MAX_H;
-        const color    = TGEnergyColors[rounded] ?? TGEnergyColors[3];
-        const label    = new Date(e.date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short' });
-        return (
-          <View key={i} style={styles.chartCol}>
-            <View style={styles.barWrap}>
-              <Text style={styles.causeLabel}>{e.entryCount ? `${e.entryCount}/4` : ''}</Text>
-              <View style={[styles.bar, { height: barH, backgroundColor: color }]} />
+    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <View style={[styles.chart, { width: Math.max(data.length * 36, 280) }]}>
+        {data.map((e, i) => {
+          const raw     = e.score ?? e.level ?? 0;
+          const rounded = Math.round(raw);
+          const color   = TGEnergyColors[rounded] ?? TGEnergyColors[3];
+          const d       = new Date(e.date + 'T00:00:00');
+          const lbl     = data.length <= 7
+            ? d.toLocaleDateString('en-IN', { weekday: 'short' })
+            : `${d.getDate()}`;
+          return (
+            <View key={i} style={styles.chartCol}>
+              <View style={styles.barWrap}>
+                <Text style={styles.causeLabel}>{e.entryCount ? `${e.entryCount}/4` : ''}</Text>
+                <View style={[styles.bar, { height: Math.max((raw/5)*MAX_H, 4), backgroundColor: color }]} />
+              </View>
+              <Text style={styles.barLabel}>{lbl}</Text>
+              <Text style={[styles.barLevel, { color }]}>{raw.toFixed ? raw.toFixed(1) : raw}</Text>
             </View>
-            <Text style={styles.barLabel}>{label}</Text>
-            <Text style={[styles.barLevel, { color }]}>{rawScore.toFixed ? rawScore.toFixed(1) : rawScore}</Text>
+          );
+        })}
+      </View>
+    </ScrollView>
+  );
+}
+
+// ─── Summary stats ────────────────────────────────────────────────────────────
+
+function SummaryStats({ data }) {
+  const s = useMemo(() => {
+    if (!data || data.length === 0) return null;
+    const scores = data.map((d) => d.score).filter(Boolean);
+    if (!scores.length) return null;
+    const avg   = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const best  = data.reduce((a, b) => (b.score > a.score ? b : a));
+    const worst = data.reduce((a, b) => (b.score < a.score ? b : a));
+    const filled = data.reduce((a, b) => a + (b.entryCount || 0), 0);
+    return { avg, best, worst, filled, total: data.length * 4 };
+  }, [data]);
+  if (!s) return null;
+  const avgColor = TGEnergyColors[Math.round(s.avg)] ?? TGEnergyColors[3];
+  const fmt = (iso) => new Date(iso+'T00:00:00').toLocaleDateString('en-IN',{day:'numeric',month:'short'});
+  return (
+    <View style={styles.statsRow}>
+      <View style={styles.statBox}>
+        <Text style={[styles.statBig, { color: avgColor }]}>{s.avg.toFixed(1)}</Text>
+        <Text style={styles.statSub}>Avg score</Text>
+      </View>
+      <View style={styles.statBox}>
+        <Text style={[styles.statBig, { color: TGEnergyColors[Math.round(s.best.score)] }]}>{s.best.score.toFixed(1)}</Text>
+        <Text style={styles.statSub}>Best · {fmt(s.best.date)}</Text>
+      </View>
+      <View style={styles.statBox}>
+        <Text style={[styles.statBig, { color: TGEnergyColors[Math.round(s.worst.score)] }]}>{s.worst.score.toFixed(1)}</Text>
+        <Text style={styles.statSub}>Worst · {fmt(s.worst.date)}</Text>
+      </View>
+      <View style={styles.statBox}>
+        <Text style={[styles.statBig, { color: TGColors.ink }]}>{s.filled}/{s.total}</Text>
+        <Text style={styles.statSub}>Sessions filled</Text>
+      </View>
+    </View>
+  );
+}
+
+// ─── Per-day detail list ──────────────────────────────────────────────────────
+
+function DayDetailList({ data }) {
+  if (!data || data.length === 0) return null;
+  const sorted = [...data].sort((a, b) => a.date > b.date ? -1 : 1);
+  return (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>Day by day</Text>
+      {sorted.map((day) => {
+        const color = TGEnergyColors[Math.round(day.score)] ?? TGEnergyColors[3];
+        return (
+          <View key={day.date} style={styles.dayRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.dayDate}>
+                {new Date(day.date+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'})}
+              </Text>
+              <View style={styles.daySessionsRow}>
+                {SESSION_KEYS.map((s) => {
+                  const e = day.sessions?.[s];
+                  return (
+                    <Text key={s} style={[styles.daySession, e && { color: TGEnergyColors[e.level] }]}>
+                      {SESSION_ICONS[s]}{e ? ` ${e.level}` : ' –'}
+                    </Text>
+                  );
+                })}
+              </View>
+            </View>
+            <View style={styles.dayScoreWrap}>
+              <Text style={[styles.dayScore, { color }]}>{day.score.toFixed(1)}</Text>
+              <Text style={styles.dayScoreSub}>/5</Text>
+            </View>
           </View>
         );
       })}
@@ -84,12 +219,14 @@ function EnergyChart({ data }) {
   );
 }
 
+// ─── Cause tally ─────────────────────────────────────────────────────────────
+
 function CauseTally({ entries }) {
   const tally = useMemo(() => {
     const low = entries.filter((e) => e.level <= 2 && e.cause);
     const counts = {};
     low.forEach((e) => { counts[e.cause] = (counts[e.cause] || 0) + 1; });
-    return Object.entries(counts).sort((a,b) => b[1]-a[1]);
+    return Object.entries(counts).sort((a, b) => b[1]-a[1]);
   }, [entries]);
   if (tally.length === 0) return null;
   return (
@@ -104,6 +241,17 @@ function CauseTally({ entries }) {
           <Text style={styles.tallyCount}>{count}</Text>
         </View>
       ))}
+    </View>
+  );
+}
+
+// ─── Log & history ────────────────────────────────────────────────────────────
+
+function StatTile({ label, count, color }) {
+  return (
+    <View style={[styles.statTile, { borderTopColor: color }]}>
+      <Text style={[styles.statCount, { color }]}>{count}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
 }
@@ -168,17 +316,31 @@ function ChangeHistorySection({ log }) {
   );
 }
 
+// ─── Main screen ──────────────────────────────────────────────────────────────
+
 export default function LedgerScreen() {
   const { logEntries, energyEntries, dailySummaries, scheduleChangeLog } = useTimeGuardian();
 
-  const chartData = useMemo(() => {
+  const today = todayISO();
+  const [preset,     setPreset]     = useState('7d');
+  const [customFrom, setCustomFrom] = useState(addDays(today, -29));
+  const [customTo,   setCustomTo]   = useState(today);
+
+  const { from, to } = useMemo(() => {
+    if (preset === '7d')    return { from: addDays(today, -6),  to: today };
+    if (preset === '30d')   return { from: addDays(today, -29), to: today };
+    if (preset === 'month') return thisMonthRange();
+    return { from: customFrom, to: customTo };
+  }, [preset, customFrom, customTo, today]);
+
+  const rangeData = useMemo(() => {
     if (!dailySummaries) return [];
     return Object.values(dailySummaries)
-      .sort((a, b) => a.date < b.date ? -1 : 1)
-      .slice(-7);
-  }, [dailySummaries]);
+      .filter((d) => d.date >= from && d.date <= to)
+      .sort((a, b) => a.date < b.date ? -1 : 1);
+  }, [dailySummaries, from, to]);
 
-  const stats = useMemo(() => {
+  const logStats = useMemo(() => {
     const c = { protected: 0, yielded: 0, open: 0, exception: 0 };
     logEntries.forEach((e) => { if (c[e.outcome] !== undefined) c[e.outcome]++; });
     return c;
@@ -190,33 +352,76 @@ export default function LedgerScreen() {
         <Text style={styles.headerTitle}>Ledger</Text>
       </View>
       <ScrollView contentContainerStyle={styles.scroll}>
+
+        {/* Log outcome tiles */}
         <View style={styles.statRow}>
-          <StatTile label="Protected" count={stats.protected} color={TGColors.sage} />
-          <StatTile label="Yielded"   count={stats.yielded}   color={TGColors.clay} />
-          <StatTile label="Open"      count={stats.open}      color={TGColors.muted} />
-          <StatTile label="Exception" count={stats.exception} color={TGColors.night} />
+          <StatTile label="Protected" count={logStats.protected} color={TGColors.sage} />
+          <StatTile label="Yielded"   count={logStats.yielded}   color={TGColors.clay} />
+          <StatTile label="Open"      count={logStats.open}      color={TGColors.muted} />
+          <StatTile label="Exception" count={logStats.exception} color={TGColors.night} />
         </View>
+
+        {/* Energy card with range picker */}
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Energy — last 7 days</Text>
-          <EnergyChart data={chartData} />
+          <Text style={styles.cardTitle}>Energy overview</Text>
+
+          {/* Preset pills */}
+          <View style={styles.presetRow}>
+            {PRESETS.map((p) => (
+              <TouchableOpacity
+                key={p.key}
+                style={[styles.pill, preset === p.key && styles.pillActive]}
+                onPress={() => setPreset(p.key)}>
+                <Text style={[styles.pillText, preset === p.key && styles.pillTextActive]}>
+                  {p.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {/* Custom date fields */}
+          {preset === 'custom' && (
+            <View style={styles.customRow}>
+              <DateField label="From" value={customFrom} onChange={setCustomFrom} />
+              <Text style={styles.customSep}>→</Text>
+              <DateField label="To"   value={customTo}   onChange={setCustomTo} />
+            </View>
+          )}
+
+          <Text style={styles.rangeLabel}>
+            {toDisplayDate(from)} – {toDisplayDate(to)}
+            {'  ·  '}{rangeData.length} day{rangeData.length !== 1 ? 's' : ''} with data
+          </Text>
+
+          <SummaryStats data={rangeData} />
+          <EnergyChart  data={rangeData} />
+
           <View style={styles.legend}>
             {[1,2,3,4,5].map((l) => (
-              <Text key={l} style={[styles.legendItem, { color: TGEnergyColors[l] }]}>{l} {TGEnergyLabels[l]}</Text>
+              <Text key={l} style={[styles.legendItem, { color: TGEnergyColors[l] }]}>
+                {l} {TGEnergyLabels[l]}
+              </Text>
             ))}
           </View>
         </View>
-        <CauseTally entries={energyEntries} />
+
+        <DayDetailList data={rangeData} />
+        <CauseTally    entries={energyEntries} />
         <ChangeHistorySection log={scheduleChangeLog} />
+
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Recent log</Text>
           {logEntries.length === 0
             ? <Text style={styles.empty}>No entries yet.</Text>
             : logEntries.map((e) => <LogRow key={e.id} entry={e} />)}
         </View>
+
       </ScrollView>
     </View>
   );
 }
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container  : { flex: 1, backgroundColor: TGColors.background },
@@ -226,21 +431,49 @@ const styles = StyleSheet.create({
 
   statRow  : { flexDirection: 'row', gap: 8, marginBottom: 16 },
   statTile : { flex: 1, backgroundColor: TGColors.surface, borderRadius: 10, padding: 12, borderTopWidth: 3, alignItems: 'center' },
-  statCount: { fontSize: 26, fontWeight: '800' },
+  statCount: { fontSize: 26, fontWeight: '800', color: TGColors.ink },
   statLabel: { color: TGColors.muted, fontSize: 10, marginTop: 4, textAlign: 'center' },
 
   card     : { backgroundColor: TGColors.surface, borderRadius: 12, padding: 16, marginBottom: 14 },
-  cardTitle: { color: TGColors.muted, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 14 },
+  cardTitle: { color: TGColors.muted, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 },
 
-  chart   : { flexDirection: 'row', alignItems: 'flex-end', gap: 6, height: 110 },
-  chartCol: { flex: 1, alignItems: 'center' },
+  presetRow        : { flexDirection: 'row', gap: 8, marginBottom: 12, flexWrap: 'wrap' },
+  pill             : { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, backgroundColor: TGColors.surfaceRaised, borderWidth: 1, borderColor: TGColors.line },
+  pillActive       : { backgroundColor: TGColors.goldDim, borderColor: TGColors.gold },
+  pillText         : { color: TGColors.muted, fontSize: 12 },
+  pillTextActive   : { color: TGColors.gold, fontWeight: '700' },
+
+  customRow : { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  customSep : { color: TGColors.muted, fontSize: 16 },
+  dpField   : { flex: 1 },
+  dpLabel   : { color: TGColors.faint, fontSize: 10, marginBottom: 4 },
+  dpBtn     : { backgroundColor: TGColors.surfaceRaised, borderRadius: 8, padding: 8, borderWidth: 1, borderColor: TGColors.line },
+  dpBtnText : { color: TGColors.ink, fontSize: 13 },
+
+  rangeLabel: { color: TGColors.faint, fontSize: 11, marginBottom: 14 },
+
+  statsRow  : { flexDirection: 'row', gap: 8, marginBottom: 16 },
+  statBox   : { flex: 1, backgroundColor: TGColors.surfaceRaised, borderRadius: 8, padding: 10, alignItems: 'center' },
+  statBig   : { fontSize: 20, fontWeight: '800' },
+  statSub   : { color: TGColors.muted, fontSize: 9, marginTop: 3, textAlign: 'center' },
+
+  chart   : { flexDirection: 'row', alignItems: 'flex-end', gap: 4, height: 110, paddingBottom: 4 },
+  chartCol: { width: 32, alignItems: 'center' },
   barWrap : { alignItems: 'center', justifyContent: 'flex-end', height: 80 },
-  bar     : { width: '100%', borderRadius: 4, minHeight: 4 },
-  causeLabel: { color: TGColors.muted, fontSize: 8, marginBottom: 2 },
-  barLabel  : { color: TGColors.muted, fontSize: 10, marginTop: 4 },
-  barLevel  : { fontSize: 11, fontWeight: '600', marginTop: 2 },
+  bar     : { width: 24, borderRadius: 4 },
+  causeLabel: { color: TGColors.muted, fontSize: 7, marginBottom: 2 },
+  barLabel  : { color: TGColors.muted, fontSize: 9, marginTop: 4 },
+  barLevel  : { fontSize: 10, fontWeight: '600', marginTop: 2 },
   legend    : { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   legendItem: { fontSize: 11 },
+
+  dayRow        : { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: TGColors.line },
+  dayDate       : { color: TGColors.ink, fontSize: 13, fontWeight: '600', marginBottom: 4 },
+  daySessionsRow: { flexDirection: 'row', gap: 10 },
+  daySession    : { color: TGColors.faint, fontSize: 12 },
+  dayScoreWrap  : { flexDirection: 'row', alignItems: 'baseline', marginLeft: 12 },
+  dayScore      : { fontSize: 22, fontWeight: '800' },
+  dayScoreSub   : { color: TGColors.muted, fontSize: 12, marginLeft: 2 },
 
   tallyRow  : { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   tallyCause: { color: TGColors.ink, fontSize: 13, width: 80 },

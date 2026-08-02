@@ -25,6 +25,7 @@ export default function TimeGuardianLayout() {
     <TimeGuardianProvider>
       <Stack screenOptions={TG_SCREEN_OPTIONS}>
         <Stack.Screen name="index"    options={{ headerShown: false }} />
+        <Stack.Screen name="day"      options={{ title: 'Day Detail' }} />
         <Stack.Screen name="ledger"   options={{ title: 'Ledger' }} />
         <Stack.Screen name="settings" options={{ title: 'Settings' }} />
       </Stack>
