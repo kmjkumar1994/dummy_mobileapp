@@ -69,3 +69,11 @@ export const TGFonts = {
 };
 
 export const DAY_LABELS_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+// Session colours — one distinct colour per time-of-day slot
+export const TGSessionColors = {
+  morning : '#C9A227', // gold   — warm start
+  work_am : '#7188B5', // night  — focused blue
+  work_pm : '#C9874A', // amber  — afternoon drive
+  evening : '#7A9B76', // sage   — wind-down green
+};

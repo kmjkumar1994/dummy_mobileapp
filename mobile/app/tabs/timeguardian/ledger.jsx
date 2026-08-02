@@ -62,17 +62,21 @@ function EnergyChart({ data }) {
   return (
     <View style={styles.chart}>
       {data.map((e, i) => {
-        const barH  = (e.level / 5) * MAX_H;
-        const color = TGEnergyColors[e.level];
-        const label = new Date(e.date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short' });
+        // data items are daily summaries: { date, score, entryCount, sessions }
+        // fall back to e.level for legacy energyChartData items
+        const rawScore = e.score ?? e.level ?? 0;
+        const rounded  = Math.round(rawScore);
+        const barH     = (rawScore / 5) * MAX_H;
+        const color    = TGEnergyColors[rounded] ?? TGEnergyColors[3];
+        const label    = new Date(e.date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'short' });
         return (
           <View key={i} style={styles.chartCol}>
             <View style={styles.barWrap}>
-              {e.cause ? <Text style={styles.causeLabel}>{e.cause.slice(0,3)}</Text> : null}
+              <Text style={styles.causeLabel}>{e.entryCount ? `${e.entryCount}/4` : ''}</Text>
               <View style={[styles.bar, { height: barH, backgroundColor: color }]} />
             </View>
             <Text style={styles.barLabel}>{label}</Text>
-            <Text style={[styles.barLevel, { color }]}>{e.level}</Text>
+            <Text style={[styles.barLevel, { color }]}>{rawScore.toFixed ? rawScore.toFixed(1) : rawScore}</Text>
           </View>
         );
       })}
@@ -165,7 +169,14 @@ function ChangeHistorySection({ log }) {
 }
 
 export default function LedgerScreen() {
-  const { logEntries, energyEntries, energyChartData, scheduleChangeLog } = useTimeGuardian();
+  const { logEntries, energyEntries, dailySummaries, scheduleChangeLog } = useTimeGuardian();
+
+  const chartData = useMemo(() => {
+    if (!dailySummaries) return [];
+    return Object.values(dailySummaries)
+      .sort((a, b) => a.date < b.date ? -1 : 1)
+      .slice(-7);
+  }, [dailySummaries]);
 
   const stats = useMemo(() => {
     const c = { protected: 0, yielded: 0, open: 0, exception: 0 };
@@ -187,7 +198,7 @@ export default function LedgerScreen() {
         </View>
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Energy — last 7 days</Text>
-          <EnergyChart data={energyChartData} />
+          <EnergyChart data={chartData} />
           <View style={styles.legend}>
             {[1,2,3,4,5].map((l) => (
               <Text key={l} style={[styles.legendItem, { color: TGEnergyColors[l] }]}>{l} {TGEnergyLabels[l]}</Text>

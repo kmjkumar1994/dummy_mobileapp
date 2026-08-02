@@ -14,6 +14,7 @@ const KEYS = {
   CUSTOM_BLOCKS      : 'tg:customBlocks',
   LOG_ENTRIES        : 'tg:logEntries',
   ENERGY_ENTRIES     : 'tg:energyEntries',
+  DAILY_SUMMARIES    : 'tg:dailySummaries',   // one combined record per day
   WORK_HOURS_HISTORY : 'tg:workHoursHistory',
   ROTATION_DEFAULTS  : 'tg:rotationDefaults',
   WEEK_PLANS         : 'tg:weekPlans',
@@ -418,23 +419,180 @@ export async function clearDayOverride(dateStr) {
   } catch { return false; }
 }
 
+// ─── Energy Sessions ─────────────────────────────────────────────────────────
+
+export const SESSION_KEYS = ['morning', 'work_am', 'work_pm', 'evening'];
+
+export const SESSION_LABELS = {
+  morning : 'Morning',
+  work_am : 'Work AM',
+  work_pm : 'Work PM',
+  evening : 'Evening',
+};
+
+export const SESSION_ICONS = {
+  morning : '🌅',
+  work_am : '💼',
+  work_pm : '⚡',
+  evening : '🌙',
+};
+
+/**
+ * Returns which session key a HH:MM time falls in, based on the user's work hours.
+ * morning  = 06:00 → workStart
+ * work_am  = workStart → 13:00
+ * work_pm  = 13:00 → workEnd
+ * evening  = workEnd → 23:00
+ */
+export function getSessionForTime(timeStr, workHours = DEFAULT_WORK_HOURS) {
+  const toMins = (t) => { const [h, m] = (t || '00:00').split(':').map(Number); return h * 60 + m; };
+  const t          = toMins(timeStr);
+  const workStart  = toMins(workHours.workStart);
+  const noon       = 13 * 60;
+  const workEnd    = toMins(workHours.workEnd);
+  if (t < workStart) return 'morning';
+  if (t < noon)      return 'work_am';
+  if (t < workEnd)   return 'work_pm';
+  return 'evening';
+}
+
+/** Returns the display time range for a session key given work hours. */
+export function getSessionBounds(sessionKey, workHours = DEFAULT_WORK_HOURS) {
+  switch (sessionKey) {
+    case 'morning' : return { start: '06:00',             end: workHours.workStart };
+    case 'work_am' : return { start: workHours.workStart, end: '13:00' };
+    case 'work_pm' : return { start: '13:00',             end: workHours.workEnd };
+    case 'evening' : return { start: workHours.workEnd,   end: '23:00' };
+    default         : return { start: '00:00',            end: '23:59' };
+  }
+}
+
 // ─── EnergyEntries ────────────────────────────────────────────────────────────
 
 export async function getEnergyEntries() {
   try { const v = await AsyncStorage.getItem(KEYS.ENERGY_ENTRIES); return v ? JSON.parse(v) : []; } catch { return []; }
 }
-export async function upsertEnergyEntry(date, time, level, cause = null) {
+
+/**
+ * Upsert an energy entry for a date + session.
+ * Session is passed explicitly — never derived from time.
+ * One entry per session per day — checking in the same session overwrites.
+ * Stores: { id, date, time, session, level, cause, updatedAt }
+ */
+export async function upsertEnergyEntry(date, time, level, cause = null, session = null, workHours = DEFAULT_WORK_HOURS) {
   try {
+    // Use the explicitly passed session; fall back to computing from time only if not provided
+    const resolvedSession = session || getSessionForTime(time, workHours);
     const entries = await getEnergyEntries();
-    const ne = { date, time, level, cause, updatedAt: new Date().toISOString() };
-    const idx = entries.findIndex((e) => e.date === date && e.time === time);
-    await AsyncStorage.setItem(KEYS.ENERGY_ENTRIES, JSON.stringify(idx >= 0 ? entries.map((e,i) => i===idx ? ne : e) : [ne, ...entries]));
+    const ne = {
+      id        : `tg_e_${date}_${resolvedSession}`,
+      date, time, session: resolvedSession, level, cause,
+      updatedAt : new Date().toISOString(),
+    };
+    const idx = entries.findIndex((e) => e.date === date && e.session === resolvedSession);
+    await AsyncStorage.setItem(
+      KEYS.ENERGY_ENTRIES,
+      JSON.stringify(idx >= 0 ? entries.map((e, i) => i === idx ? ne : e) : [ne, ...entries])
+    );
     return ne;
   } catch { return null; }
 }
+
+/** All entries for a specific date sorted by session order. */
+export async function getEnergyEntriesForDate(date) {
+  const entries = await getEnergyEntries();
+  return entries
+    .filter((e) => e.date === date)
+    .sort((a, b) => SESSION_KEYS.indexOf(a.session) - SESSION_KEYS.indexOf(b.session));
+}
+
+/** One representative entry per date (latest session) for the trend chart. */
 export async function getEnergyChartData(days = 7) {
   const entries = await getEnergyEntries();
-  const byDate = {};
-  entries.forEach((e) => { if (!byDate[e.date] || e.time > byDate[e.date].time) byDate[e.date] = e; });
-  return Object.values(byDate).sort((a,b) => a.date < b.date ? -1 : 1).slice(-days);
+  const byDate  = {};
+  entries.forEach((e) => {
+    if (!byDate[e.date]) { byDate[e.date] = e; return; }
+    const cur  = SESSION_KEYS.indexOf(e.session);
+    const best = SESSION_KEYS.indexOf(byDate[e.date].session);
+    if (cur > best) byDate[e.date] = e;
+  });
+  return Object.values(byDate).sort((a, b) => a.date < b.date ? -1 : 1).slice(-days);
+}
+
+// ─── Daily Summaries ──────────────────────────────────────────────────────────
+// One record per day that combines ALL posted sessions into a weighted score.
+// Only sessions that were actually checked-in contribute; unfilled ones are omitted.
+// Shape: { date, score, entryCount, sessions: { morning?, work_am?, work_pm?, evening? }, updatedAt }
+
+const SUMMARY_WEIGHTS = { morning: 1, work_am: 1.5, work_pm: 1.5, evening: 2 };
+
+export async function getDailySummaries() {
+  try {
+    const v = await AsyncStorage.getItem(KEYS.DAILY_SUMMARIES);
+    return v ? JSON.parse(v) : {};
+  } catch { return {}; }
+}
+
+/**
+ * Recomputes and persists the daily summary for `date` from all its energy entries.
+ * Called after every check-in so the summary always reflects the current state.
+ * Returns the saved summary object, or null on error.
+ */
+export async function upsertDailySummary(date) {
+  try {
+    const entries  = await getEnergyEntriesForDate(date);
+    if (entries.length === 0) return null;             // nothing posted — no summary
+
+    // Build per-session map (latest wins if somehow duplicated)
+    const bySession = {};
+    entries.forEach((e) => {
+      if (!bySession[e.session] || e.time > bySession[e.session].time) {
+        bySession[e.session] = e;
+      }
+    });
+
+    // Weighted average of only the posted sessions
+    let weightedSum = 0;
+    let totalWeight = 0;
+    SESSION_KEYS.forEach((s) => {
+      if (bySession[s]) {
+        const w = SUMMARY_WEIGHTS[s] ?? 1;
+        weightedSum += bySession[s].level * w;
+        totalWeight += w;
+      }
+    });
+
+    const score = totalWeight > 0
+      ? Math.round((weightedSum / totalWeight) * 10) / 10
+      : null;
+
+    const summary = {
+      date,
+      score,
+      entryCount : entries.length,
+      sessions   : Object.fromEntries(
+        SESSION_KEYS
+          .filter((s) => bySession[s])
+          .map((s) => [s, { level: bySession[s].level, cause: bySession[s].cause, time: bySession[s].time }])
+      ),
+      updatedAt  : new Date().toISOString(),
+    };
+
+    const all = await getDailySummaries();
+    all[date]  = summary;
+    await AsyncStorage.setItem(KEYS.DAILY_SUMMARIES, JSON.stringify(all));
+    return summary;
+  } catch { return null; }
+}
+
+/**
+ * Returns the last `days` daily summaries sorted oldest → newest.
+ * Each item has { date, score, entryCount, sessions }.
+ * Days with no check-ins are simply absent — no placeholder rows.
+ */
+export async function getDailySummaryChartData(days = 7) {
+  const all = await getDailySummaries();
+  return Object.values(all)
+    .sort((a, b) => a.date < b.date ? -1 : 1)
+    .slice(-days);
 }
