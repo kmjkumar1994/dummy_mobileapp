@@ -118,6 +118,7 @@ function SessionEnergyCard({ todayEntries, currentWorkHours, onCheckIn }) {
   const [activeSession,  setActiveSession]  = useState(null);
   const [pendingLevel,   setPendingLevel]   = useState(null);
   const [pendingSession, setPendingSession] = useState(null);
+  const [expanded,       setExpanded]       = useState(false);
 
   const nowSession = useMemo(() => {
     const now = new Date();
@@ -154,8 +155,8 @@ function SessionEnergyCard({ todayEntries, currentWorkHours, onCheckIn }) {
 
   return (
     <View style={styles.sessionCard}>
-      {/* ── Day overall summary ── */}
-      <View style={styles.sessionDaySummary}>
+      {/* ── Day overall summary — tap to expand/collapse ── */}
+      <TouchableOpacity style={styles.sessionDaySummary} onPress={() => setExpanded(v => !v)} activeOpacity={0.75}>
         <View style={{ flex: 1 }}>
           <Text style={styles.sessionCardTitle}>How's your day going?</Text>
           {dayScore !== null && (
@@ -176,8 +177,10 @@ function SessionEnergyCard({ todayEntries, currentWorkHours, onCheckIn }) {
             {entryCount === 0 ? 'No check-ins yet' : `${entryCount}/4 sessions`}
           </Text>
         )}
-      </View>
+        <Text style={styles.sessionCardChevron}>{expanded ? '▲' : '▼'}</Text>
+      </TouchableOpacity>
 
+      {expanded && <View>
       {/* Session progress dots */}
       <View style={styles.sessionDotsRow}>
         {SESSION_KEYS.map((s) => {
@@ -307,6 +310,7 @@ function SessionEnergyCard({ todayEntries, currentWorkHours, onCheckIn }) {
           </View>
         );
       })}
+      </View>}
     </View>
   );
 }
@@ -1206,6 +1210,7 @@ const styles = StyleSheet.create({
 
   // Session energy card
   sessionCard          : { backgroundColor: TGColors.surface, borderRadius: 12, padding: 14, marginBottom: 16 },
+  sessionCardChevron   : { color: TGColors.faint, fontSize: 11, marginLeft: 10, alignSelf: 'center' },
   sessionDaySummary    : { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   sessionCardTitle     : { color: TGColors.muted, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 2 },
   sessionDayLabel      : { fontSize: 15, fontWeight: '700' },
