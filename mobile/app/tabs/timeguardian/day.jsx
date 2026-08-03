@@ -108,11 +108,18 @@ function TimePickerField({ label, value, onChange }) {
 // ─── Task form modal ──────────────────────────────────────────────────────────
 
 function TaskFormModal({ visible, initial, defaultTime, onSave, onClose }) {
-  const [form, setForm] = useState(initial || { title: '', time: defaultTime || '', duration: '', category: 'work', note: '', protected: false });
+  const { notifPrefs } = useTimeGuardian();
+  const defaultReminder = notifPrefs?.enabled ?? false;
+
+  const [form, setForm] = useState(
+    initial || { title: '', time: defaultTime || '', duration: '', category: 'work', note: '', protected: false, reminder: defaultReminder }
+  );
   const setF = (k, v) => setForm((p) => ({ ...p, [k]: v }));
 
   useEffect(() => {
-    if (visible) setForm(initial || { title: '', time: defaultTime || '', duration: '', category: 'work', note: '', protected: false });
+    if (visible) setForm(
+      initial || { title: '', time: defaultTime || '', duration: '', category: 'work', note: '', protected: false, reminder: defaultReminder }
+    );
   }, [visible]);
 
   const handleSave = () => {
@@ -176,6 +183,20 @@ function TaskFormModal({ visible, initial, defaultTime, onSave, onClose }) {
             <Switch value={form.protected} onValueChange={(v) => setF('protected', v)}
               trackColor={{ false: TGColors.line, true: TGColors.goldDim }}
               thumbColor={form.protected ? TGColors.gold : TGColors.faint} />
+          </View>
+
+          <View style={styles.toggleRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.fieldLabel}>Remind me</Text>
+              <Text style={styles.toggleSub}>
+                {form.reminder
+                  ? `Fires ${notifPrefs?.leadMinutes ?? 10} min before (global setting)`
+                  : 'No reminder for this task'}
+              </Text>
+            </View>
+            <Switch value={form.reminder ?? defaultReminder} onValueChange={(v) => setF('reminder', v)}
+              trackColor={{ false: TGColors.line, true: TGColors.goldDim }}
+              thumbColor={(form.reminder ?? defaultReminder) ? TGColors.gold : TGColors.faint} />
           </View>
 
           <TouchableOpacity style={styles.goldBtn} onPress={handleSave}>

@@ -49,7 +49,17 @@
           }
         }
       ],
-      "./plugins/withShareIntentAndroid"
+      "./plugins/withShareIntentAndroid",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#C9A227",
+          "sounds": [],
+          "androidMode": "default",
+          "androidCollapsedTitle": "Time Guardian"
+        }
+      ]
     ],
     "scheme": "audioconverter",
     "experiments": {

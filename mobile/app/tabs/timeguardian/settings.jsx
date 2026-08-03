@@ -392,6 +392,105 @@ function CustomBlocksSection({ customBlocks, onToggle, onDelete, onCreate, onEdi
   );
 }
 
+// ─── Reminders Section ───────────────────────────────────────────────────────
+
+const LEAD_OPTIONS = [
+  { label: '5 min',  value: 5  },
+  { label: '10 min', value: 10 },
+  { label: '15 min', value: 15 },
+  { label: '30 min', value: 30 },
+];
+
+function RemindersSection({ notifPrefs, onUpdate, onRequestPermission }) {
+  const enabled     = notifPrefs?.enabled      ?? false;
+  const lead        = notifPrefs?.leadMinutes  ?? 10;
+  const permStatus  = notifPrefs?.permissionStatus ?? 'undetermined';
+  const denied      = permStatus === 'denied';
+  const granted     = permStatus === 'granted';
+
+  const handleToggle = async (val) => {
+    if (val && !granted && permStatus !== 'dev-build-required') {
+      // Ask for permission first (only when real notifications are available)
+      const result = await onRequestPermission();
+      if (!result.granted && result.status !== 'dev-build-required') return;
+    }
+    onUpdate({ enabled: val });
+  };
+
+  return (
+    <>
+      <SectionTitle
+        title="Reminders"
+        subtitle="Local notifications before your blocks and tasks start. All on-device — no backend."
+      />
+      <View style={styles.card}>
+
+        {/* Global enable toggle */}
+        <View style={styles.notifRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.notifLabel}>Enable reminders</Text>
+            <Text style={styles.notifSub}>
+              {granted ? 'Permission granted' : denied ? 'Permission denied — tap below to open settings' : 'Permission not yet requested'}
+            </Text>
+          </View>
+          <Switch
+            value={enabled}
+            onValueChange={handleToggle}
+            trackColor={{ false: TGColors.line, true: TGColors.goldDim }}
+            thumbColor={enabled ? TGColors.gold : TGColors.faint}
+            disabled={denied}
+          />
+        </View>
+
+        {/* Lead time picker — only shown when enabled */}
+        {enabled && (
+          <>
+            <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Remind me before</Text>
+            <View style={styles.chipRow}>
+              {LEAD_OPTIONS.map((opt) => (
+                <TouchableOpacity
+                  key={opt.value}
+                  style={[styles.chip, lead === opt.value && styles.chipActive]}
+                  onPress={() => onUpdate({ leadMinutes: opt.value })}>
+                  <Text style={[styles.chipText, lead === opt.value && styles.chipTextActive]}>
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <Text style={styles.notifHint}>
+              Applied to all active blocks and tasks. Override per-item when adding or editing a task.
+            </Text>
+          </>
+        )}
+
+        {/* Permission denied — open system settings */}
+        {denied && (
+          <TouchableOpacity
+            style={[styles.outlineBtn, { marginTop: 12, borderColor: TGColors.clay }]}
+            onPress={() => {
+              import('expo-linking').then(({ default: Linking }) => Linking.openSettings());
+            }}>
+            <Text style={[styles.outlineBtnText, { color: TGColors.clay }]}>
+              Open system settings to grant permission
+            </Text>
+          </TouchableOpacity>
+        )}
+
+        {/* Request permission button — undetermined state */}
+        {!granted && !denied && (
+          <TouchableOpacity
+            style={[styles.outlineBtn, { marginTop: 12 }]}
+            onPress={onRequestPermission}>
+            <Text style={styles.outlineBtnText}>Request notification permission</Text>
+          </TouchableOpacity>
+        )}
+
+      </View>
+    </>
+  );
+}
+
 // ─── Settings Screen ──────────────────────────────────────────────────────────
 
 export default function SettingsScreen() {
@@ -399,7 +498,14 @@ export default function SettingsScreen() {
     anchorDate, currentWorkHours, currentRotationDefaults, customBlocks,
     saveAnchorDate, updateWorkHours, updateRotationDefaults,
     createBlock, editBlock, removeBlock, toggleBlock,
+    notifPrefs, updateNotifPrefs, requestPermissions,
   } = useTimeGuardian();
+
+  const handleRequestPermission = async () => {
+    const result = await requestPermissions();
+    await updateNotifPrefs({ permissionStatus: result.status });
+    return result;
+  };
 
   return (
     <View style={styles.container}>
@@ -414,6 +520,11 @@ export default function SettingsScreen() {
           customBlocks={customBlocks}
           onToggle={toggleBlock} onDelete={removeBlock}
           onCreate={createBlock} onEdit={editBlock}
+        />
+        <RemindersSection
+          notifPrefs={notifPrefs}
+          onUpdate={updateNotifPrefs}
+          onRequestPermission={handleRequestPermission}
         />
       </ScrollView>
     </View>
@@ -474,6 +585,11 @@ const styles = StyleSheet.create({
   dayBtnText: { color: TGColors.muted, fontSize: 12, fontWeight: '500' },
 
   emptyText: { color: TGColors.muted, fontSize: 13, fontStyle: 'italic', marginBottom: 10 },
+
+  notifRow  : { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
+  notifLabel: { color: TGColors.ink, fontSize: 14, fontWeight: '500', marginBottom: 2 },
+  notifSub  : { color: TGColors.muted, fontSize: 11 },
+  notifHint : { color: TGColors.faint, fontSize: 11, marginTop: 10, fontStyle: 'italic' },
 
   reasonOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 24 },
   reasonBox    : { backgroundColor: TGColors.surface, borderRadius: 16, padding: 20 },

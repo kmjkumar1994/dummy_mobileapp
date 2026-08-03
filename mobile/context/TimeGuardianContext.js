@@ -1,9 +1,10 @@
 /**
- * TimeGuardianContext.js — v5
- * Added: weekPlans, versioned workHours, week-aware schedule editing with effectiveFrom.
+ * TimeGuardianContext.js — v6
+ * Added: notification prefs, resync after CRUD, AppState foreground resync.
  */
 
-import React, { createContext, useContext, useReducer, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useReducer, useCallback, useEffect, useRef } from 'react';
+import { AppState } from 'react-native';
 import {
   getRotationAnchor, setRotationAnchor,
   getWorkHoursHistory, getCurrentWorkHours, saveWorkHours,
@@ -22,8 +23,14 @@ import {
   getMondayOfWeek, isSecondWeekOfMonth,
   SUNDAY_TYPE_LABELS, SATURDAY_TYPE_LABELS, DAY_OVERRIDE_TYPES,
   getSessionForTime,
+  getNotifPrefs, saveNotifPrefs, DEFAULT_NOTIF_PREFS,
 } from '../timeguardian/storage/repository';
 import { todayStr, nowTimeStr, getDayOfWeek } from '../timeguardian/logic/dayBlocks';
+import {
+  resyncAllReminders,
+  requestPermissions,
+  checkPermissions,
+} from '../timeguardian/notifications/scheduler';
 
 const TimeGuardianContext = createContext(null);
 
@@ -42,44 +49,50 @@ const initialState = {
   energyEntries           : [],
   energyChartData         : [],
   todayEnergy             : null,
-  todaySessionEntries     : [],   // all energy entries for today, one per session
-  dailySummaries          : {},   // keyed by date — combined weighted score per day
+  todaySessionEntries     : [],
+  dailySummaries          : {},
   dayOverrides            : {},
+  notifPrefs              : { ...DEFAULT_NOTIF_PREFS },
 };
 
 const A = {
-  BOOTSTRAP       : 'BOOTSTRAP',
-  SET_ANCHOR      : 'SET_ANCHOR',
-  SET_WORK_HOURS  : 'SET_WORK_HOURS',
-  SET_ROTATION    : 'SET_ROTATION',
-  SET_WEEK_PLANS  : 'SET_WEEK_PLANS',
-  SET_CHANGE_LOG  : 'SET_CHANGE_LOG',
-  SET_BLOCKS      : 'SET_BLOCKS',
-  SET_RECURRING   : 'SET_RECURRING',
-  SET_LOGS        : 'SET_LOGS',
-  SET_ENERGY      : 'SET_ENERGY',
+  BOOTSTRAP        : 'BOOTSTRAP',
+  SET_ANCHOR       : 'SET_ANCHOR',
+  SET_WORK_HOURS   : 'SET_WORK_HOURS',
+  SET_ROTATION     : 'SET_ROTATION',
+  SET_WEEK_PLANS   : 'SET_WEEK_PLANS',
+  SET_CHANGE_LOG   : 'SET_CHANGE_LOG',
+  SET_BLOCKS       : 'SET_BLOCKS',
+  SET_RECURRING    : 'SET_RECURRING',
+  SET_LOGS         : 'SET_LOGS',
+  SET_ENERGY       : 'SET_ENERGY',
   SET_DAY_OVERRIDES: 'SET_DAY_OVERRIDES',
+  SET_NOTIF_PREFS  : 'SET_NOTIF_PREFS',
 };
 
 function reducer(state, action) {
   switch (action.type) {
-    case A.BOOTSTRAP      : return { ...state, isLoading: false, ...action.payload };
-    case A.SET_ANCHOR     : return { ...state, anchorDate: action.payload };
-    case A.SET_WORK_HOURS : return { ...state, currentWorkHours: action.payload.current, workHoursHistory: action.payload.history };
-    case A.SET_ROTATION   : return { ...state, currentRotationDefaults: action.payload.current, rotationDefaultsHistory: action.payload.history };
-    case A.SET_WEEK_PLANS : return { ...state, weekPlans: action.payload };
-    case A.SET_CHANGE_LOG : return { ...state, scheduleChangeLog: action.payload };
-    case A.SET_BLOCKS     : return { ...state, customBlocks: action.payload };
-    case A.SET_RECURRING  : return { ...state, recurringTasks: action.payload };
-    case A.SET_LOGS       : return { ...state, logEntries: action.payload };
-    case A.SET_ENERGY        : return { ...state, ...action.payload };
-    case A.SET_DAY_OVERRIDES : return { ...state, dayOverrides: action.payload };
-    default                  : return state;
+    case A.BOOTSTRAP       : return { ...state, isLoading: false, ...action.payload };
+    case A.SET_ANCHOR      : return { ...state, anchorDate: action.payload };
+    case A.SET_WORK_HOURS  : return { ...state, currentWorkHours: action.payload.current, workHoursHistory: action.payload.history };
+    case A.SET_ROTATION    : return { ...state, currentRotationDefaults: action.payload.current, rotationDefaultsHistory: action.payload.history };
+    case A.SET_WEEK_PLANS  : return { ...state, weekPlans: action.payload };
+    case A.SET_CHANGE_LOG  : return { ...state, scheduleChangeLog: action.payload };
+    case A.SET_BLOCKS      : return { ...state, customBlocks: action.payload };
+    case A.SET_RECURRING   : return { ...state, recurringTasks: action.payload };
+    case A.SET_LOGS        : return { ...state, logEntries: action.payload };
+    case A.SET_ENERGY      : return { ...state, ...action.payload };
+    case A.SET_DAY_OVERRIDES: return { ...state, dayOverrides: action.payload };
+    case A.SET_NOTIF_PREFS : return { ...state, notifPrefs: action.payload };
+    default                : return state;
   }
 }
 
 export function TimeGuardianProvider({ children }) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  const appState = useRef(AppState.currentState);
+
+  // ── Bootstrap ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
     (async () => {
@@ -90,6 +103,7 @@ export function TimeGuardianProvider({ children }) {
         blocks, recurringTasks, logs,
         energyEntries, energyChartData,
         dailySummaries, dayOverrides,
+        notifPrefs,
       ] = await Promise.all([
         getRotationAnchor(),
         getCurrentWorkHours(),
@@ -105,6 +119,7 @@ export function TimeGuardianProvider({ children }) {
         getEnergyChartData(7),
         getDailySummaries(),
         getDayOverrides(),
+        getNotifPrefs(),
       ]);
 
       const today               = todayStr();
@@ -122,10 +137,25 @@ export function TimeGuardianProvider({ children }) {
           customBlocks: blocks, recurringTasks,
           logEntries: logs, energyEntries, energyChartData, todayEnergy,
           todaySessionEntries, dailySummaries,
-          dayOverrides,
+          dayOverrides, notifPrefs,
         },
       });
+
+      // Kick off initial resync non-blocking
+      resyncAllReminders(notifPrefs).catch(() => {});
     })();
+  }, []);
+
+  // ── AppState foreground resync (task 7) ───────────────────────────────────
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (appState.current.match(/inactive|background/) && nextState === 'active') {
+        resyncAllReminders().catch(() => {});
+      }
+      appState.current = nextState;
+    });
+    return () => sub.remove();
   }, []);
 
   // ── Anchor ────────────────────────────────────────────────────────────────
@@ -138,10 +168,10 @@ export function TimeGuardianProvider({ children }) {
     dispatch({ type: A.SET_CHANGE_LOG, payload: await getScheduleChangeLog() });
   }, [state.anchorDate]);
 
-  // ── Work Hours (versioned) ────────────────────────────────────────────────
+  // ── Work Hours ────────────────────────────────────────────────────────────
 
   const updateWorkHours = useCallback(async (hours, effectiveFrom, reason) => {
-    const today      = todayStr();
+    const today       = todayStr();
     const retroactive = effectiveFrom < today;
     await saveWorkHours(hours, effectiveFrom, retroactive);
     await addScheduleChangeLog('work_hours', state.currentWorkHours, hours, reason, effectiveFrom, retroactive);
@@ -150,10 +180,10 @@ export function TimeGuardianProvider({ children }) {
     dispatch({ type: A.SET_CHANGE_LOG, payload: await getScheduleChangeLog() });
   }, [state.currentWorkHours]);
 
-  // ── Rotation Defaults (versioned) ─────────────────────────────────────────
+  // ── Rotation Defaults ─────────────────────────────────────────────────────
 
   const updateRotationDefaults = useCallback(async (defaults, effectiveFrom, reason) => {
-    const today      = todayStr();
+    const today       = todayStr();
     const retroactive = effectiveFrom < today;
     await saveRotationDefaults(defaults, effectiveFrom, retroactive);
     await addScheduleChangeLog('rotation_defaults', state.currentRotationDefaults, defaults, reason, effectiveFrom, retroactive);
@@ -162,10 +192,10 @@ export function TimeGuardianProvider({ children }) {
     dispatch({ type: A.SET_CHANGE_LOG, payload: await getScheduleChangeLog() });
   }, [state.currentRotationDefaults]);
 
-  // ── Week Plans (per-week override) ────────────────────────────────────────
+  // ── Week Plans ────────────────────────────────────────────────────────────
 
   const setWeekPlan = useCallback(async (weekStartDate, plan, reason) => {
-    const today      = todayStr();
+    const today       = todayStr();
     const retroactive = weekStartDate < today;
     await saveWeekPlan(weekStartDate, plan);
     await addScheduleChangeLog(
@@ -183,10 +213,30 @@ export function TimeGuardianProvider({ children }) {
   const refreshBlocks = useCallback(async () => {
     dispatch({ type: A.SET_BLOCKS, payload: await getCustomBlocks() });
   }, []);
-  const createBlock = useCallback(async (b)         => { await addCustomBlock(b);             await refreshBlocks(); }, [refreshBlocks]);
-  const editBlock   = useCallback(async (id, ch)    => { await updateCustomBlock(id, ch);     await refreshBlocks(); }, [refreshBlocks]);
-  const removeBlock = useCallback(async (id)        => { await deleteCustomBlock(id);          await refreshBlocks(); }, [refreshBlocks]);
-  const toggleBlock = useCallback(async (id)        => { await toggleCustomBlockActive(id);   await refreshBlocks(); }, [refreshBlocks]);
+
+  const createBlock = useCallback(async (b) => {
+    await addCustomBlock(b);
+    await refreshBlocks();
+    resyncAllReminders().catch(() => {});
+  }, [refreshBlocks]);
+
+  const editBlock = useCallback(async (id, ch) => {
+    await updateCustomBlock(id, ch);
+    await refreshBlocks();
+    resyncAllReminders().catch(() => {});
+  }, [refreshBlocks]);
+
+  const removeBlock = useCallback(async (id) => {
+    await deleteCustomBlock(id);
+    await refreshBlocks();
+    resyncAllReminders().catch(() => {});
+  }, [refreshBlocks]);
+
+  const toggleBlock = useCallback(async (id) => {
+    await toggleCustomBlockActive(id);
+    await refreshBlocks();
+    resyncAllReminders().catch(() => {});
+  }, [refreshBlocks]);
 
   // ── Daily Tasks ───────────────────────────────────────────────────────────
 
@@ -196,23 +246,56 @@ export function TimeGuardianProvider({ children }) {
     return [...oneOff, ...recurring.map((r) => ({ ...r, isRecurring: true, date }))].sort((a,b) => a.time < b.time ? -1 : 1);
   }, []);
 
-  const createDailyTask         = useCallback(async (t)     => addDailyTask(t), []);
-  const editDailyTask           = useCallback(async (id,ch) => updateDailyTask(id, ch), []);
-  const removeDailyTask         = useCallback(async (id)    => deleteDailyTask(id), []);
-  const toggleDailyTaskDone     = useCallback(async (id, c) => updateDailyTask(id, { done: !c }), []);
-  const toggleDailyTaskProtected= useCallback(async (id, c) => updateDailyTask(id, { protected: !c }), []);
+  const createDailyTask = useCallback(async (t) => {
+    const r = await addDailyTask(t);
+    resyncAllReminders().catch(() => {});
+    return r;
+  }, []);
+
+  const editDailyTask = useCallback(async (id, ch) => {
+    await updateDailyTask(id, ch);
+    resyncAllReminders().catch(() => {});
+  }, []);
+
+  const removeDailyTask = useCallback(async (id) => {
+    await deleteDailyTask(id);
+    resyncAllReminders().catch(() => {});
+  }, []);
+
+  const toggleDailyTaskDone      = useCallback(async (id, c) => updateDailyTask(id, { done: !c }), []);
+  const toggleDailyTaskProtected = useCallback(async (id, c) => updateDailyTask(id, { protected: !c }), []);
 
   // ── Recurring Tasks ───────────────────────────────────────────────────────
 
   const refreshRecurring = useCallback(async () => {
     dispatch({ type: A.SET_RECURRING, payload: await getRecurringTasks() });
   }, []);
-  const createRecurringTask = useCallback(async (t)    => { await addRecurringTask(t);              await refreshRecurring(); }, [refreshRecurring]);
-  const editRecurringTask   = useCallback(async (id,ch)=> { await updateRecurringTask(id, ch);      await refreshRecurring(); }, [refreshRecurring]);
-  const removeRecurringTask = useCallback(async (id)   => { await deleteRecurringTask(id);          await refreshRecurring(); }, [refreshRecurring]);
-  const toggleRecurring     = useCallback(async (id)   => { await toggleRecurringTaskActive(id);   await refreshRecurring(); }, [refreshRecurring]);
 
-  // ── Day Overrides (per-date, independent of week plan) ───────────────────
+  const createRecurringTask = useCallback(async (t) => {
+    await addRecurringTask(t);
+    await refreshRecurring();
+    resyncAllReminders().catch(() => {});
+  }, [refreshRecurring]);
+
+  const editRecurringTask = useCallback(async (id, ch) => {
+    await updateRecurringTask(id, ch);
+    await refreshRecurring();
+    resyncAllReminders().catch(() => {});
+  }, [refreshRecurring]);
+
+  const removeRecurringTask = useCallback(async (id) => {
+    await deleteRecurringTask(id);
+    await refreshRecurring();
+    resyncAllReminders().catch(() => {});
+  }, [refreshRecurring]);
+
+  const toggleRecurring = useCallback(async (id) => {
+    await toggleRecurringTaskActive(id);
+    await refreshRecurring();
+    resyncAllReminders().catch(() => {});
+  }, [refreshRecurring]);
+
+  // ── Day Overrides ─────────────────────────────────────────────────────────
 
   const refreshDayOverrides = useCallback(async () => {
     dispatch({ type: A.SET_DAY_OVERRIDES, payload: await getDayOverrides() });
@@ -269,6 +352,17 @@ export function TimeGuardianProvider({ children }) {
     dispatch({ type: A.SET_ENERGY, payload: { energyEntries, energyChartData, todayEnergy, todaySessionEntries, dailySummaries } });
   }, [state.currentWorkHours]);
 
+  // ── Notification Preferences ──────────────────────────────────────────────
+
+  const updateNotifPrefs = useCallback(async (changes) => {
+    const current = await getNotifPrefs();
+    const updated = { ...current, ...changes };
+    await saveNotifPrefs(updated);
+    dispatch({ type: A.SET_NOTIF_PREFS, payload: updated });
+    resyncAllReminders(updated).catch(() => {});
+    return updated;
+  }, []);
+
   return (
     <TimeGuardianContext.Provider value={{
       ...state,
@@ -282,7 +376,7 @@ export function TimeGuardianProvider({ children }) {
       logEntry, editLogEntry, removeLogEntry, checkInEnergy,
       setDayOverride, removeDayOverride,
       getDailySummaryChartData,
-      // helpers exposed for UI
+      updateNotifPrefs, requestPermissions, checkPermissions,
       isSecondWeekOfMonth, getMondayOfWeek,
       SUNDAY_TYPE_LABELS, SATURDAY_TYPE_LABELS, DAY_OVERRIDE_TYPES,
       getSessionForTime,
