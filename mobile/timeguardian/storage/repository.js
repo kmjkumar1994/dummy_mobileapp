@@ -14,7 +14,7 @@ const KEYS = {
   CUSTOM_BLOCKS      : 'tg:customBlocks',
   LOG_ENTRIES        : 'tg:logEntries',
   ENERGY_ENTRIES     : 'tg:energyEntries',
-  DAILY_SUMMARIES    : 'tg:dailySummaries',   // one combined record per day
+  DAILY_SUMMARIES    : 'tg:dailySummaries',
   WORK_HOURS_HISTORY : 'tg:workHoursHistory',
   ROTATION_DEFAULTS  : 'tg:rotationDefaults',
   WEEK_PLANS         : 'tg:weekPlans',
@@ -22,6 +22,8 @@ const KEYS = {
   DAILY_TASKS        : 'tg:dailyTasks',
   RECURRING_TASKS    : 'tg:recurringTasks',
   DAY_OVERRIDES      : 'tg:dayOverrides',
+  NOTIF_PREFS        : 'tg:notificationPrefs',  // global notification preferences
+  NOTIF_IDS          : 'tg:notifIds',           // { entityId -> notificationId[] } mapping
 };
 
 // Per-day override types — applied on top of the week plan for a single date
@@ -595,4 +597,73 @@ export async function getDailySummaryChartData(days = 7) {
   return Object.values(all)
     .sort((a, b) => a.date < b.date ? -1 : 1)
     .slice(-days);
+}
+
+// ─── Notification Preferences ─────────────────────────────────────────────────
+// Shape: { enabled: boolean, leadMinutes: number, permissionStatus: string }
+
+export const DEFAULT_NOTIF_PREFS = {
+  enabled        : false,   // off until user explicitly enables
+  leadMinutes    : 10,      // default: 10 min before block/task
+  permissionStatus: 'undetermined', // 'granted' | 'denied' | 'undetermined'
+};
+
+export async function getNotifPrefs() {
+  try {
+    const v = await AsyncStorage.getItem(KEYS.NOTIF_PREFS);
+    return v ? { ...DEFAULT_NOTIF_PREFS, ...JSON.parse(v) } : { ...DEFAULT_NOTIF_PREFS };
+  } catch { return { ...DEFAULT_NOTIF_PREFS }; }
+}
+
+export async function saveNotifPrefs(prefs) {
+  try {
+    await AsyncStorage.setItem(KEYS.NOTIF_PREFS, JSON.stringify(prefs));
+    return true;
+  } catch { return false; }
+}
+
+// ─── Notification ID Map ───────────────────────────────────────────────────────
+// Maps entityId (block id / task id) to array of scheduled notification identifiers.
+// Shape: { [entityId: string]: string[] }
+
+export async function getNotifIds() {
+  try {
+    const v = await AsyncStorage.getItem(KEYS.NOTIF_IDS);
+    return v ? JSON.parse(v) : {};
+  } catch { return {}; }
+}
+
+export async function saveNotifIds(map) {
+  try {
+    await AsyncStorage.setItem(KEYS.NOTIF_IDS, JSON.stringify(map));
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * Store notification IDs for a given entity, replacing any previous ones.
+ */
+export async function setNotifIdsForEntity(entityId, notifIds) {
+  const map = await getNotifIds();
+  if (notifIds && notifIds.length > 0) {
+    map[entityId] = notifIds;
+  } else {
+    delete map[entityId];
+  }
+  return saveNotifIds(map);
+}
+
+/**
+ * Retrieve notification IDs previously scheduled for an entity.
+ */
+export async function getNotifIdsForEntity(entityId) {
+  const map = await getNotifIds();
+  return map[entityId] || [];
+}
+
+/**
+ * Remove an entity's notification ID entry from the map (after cancelling).
+ */
+export async function clearNotifIdsForEntity(entityId) {
+  return setNotifIdsForEntity(entityId, []);
 }
