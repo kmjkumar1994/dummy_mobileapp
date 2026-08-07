@@ -2,22 +2,17 @@
  * scheduler.js — Time Guardian notification scheduler
  *
  * expo-notifications requires a custom dev build — it is NOT available in Expo Go.
- * This module is written so the rest of the app (settings UI, context, per-item
- * toggles) all work correctly today, and real notifications are enabled by flipping
- * one flag once a dev build exists.
  *
  * HOW TO ENABLE REAL NOTIFICATIONS:
  *   1. Run:  npx expo prebuild  (or use EAS Build)
  *   2. Run:  npx expo run:android  (or run:ios)
- *   3. Change NOTIF_AVAILABLE = true below.
- *   The rest of this file is already wired for real scheduling.
+ *   3. Ensure NOTIF_AVAILABLE = true below (already set).
  *
- * Until then:
- *   - Permissions always return { granted: false, status: 'dev-build-required' }
- *   - Scheduling logs intent to console and stores the ID map in AsyncStorage
- *   - cancelReminder / cancelAllReminders clear the stored map
- *   - resyncAllReminders runs the full logic path (guards, date math, overrides)
- *     and logs what would fire, so you can verify correctness
+ * Fixes applied:
+ *   - setNotificationHandler registered on first load (required for delivery)
+ *   - trigger uses { type: 'date', date } — explicit type required in v0.20+
+ *   - sound: true (boolean) on both channel and content — not the string 'default'
+ *   - enableLights + enableVibrate on Android channel
  */
 
 import { Platform } from 'react-native';
@@ -33,11 +28,11 @@ import {
 } from '../storage/repository';
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
-// true = running a custom dev build (expo prebuild / EAS Build / expo run:android)
-// false = Expo Go — all calls no-op safely, preferences still persist
+// true  = custom dev build (expo run:android / EAS Build) — real notifications
+// false = Expo Go — all calls no-op safely, preferences still persist in storage
 const NOTIF_AVAILABLE = true;
 
-// ─── Lazy-load real notifications (only when NOTIF_AVAILABLE = true) ──────────
+// ─── Native module loader ─────────────────────────────────────────────────────
 
 let _N = null;
 
@@ -46,6 +41,17 @@ async function getNative() {
   if (_N) return _N;
   try {
     _N = await import('expo-notifications');
+
+    // REQUIRED: without this Android silently drops every notification.
+    // Must be set once before any scheduleNotificationAsync call.
+    _N.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert : true,
+        shouldPlaySound : true,
+        shouldSetBadge  : false,
+      }),
+    });
+
     return _N;
   } catch (e) {
     console.warn('[TG Notif] expo-notifications unavailable:', e?.message);
@@ -67,7 +73,9 @@ export async function ensureAndroidChannel() {
       importance      : N.AndroidImportance.HIGH,
       vibrationPattern: [0, 250, 250, 250],
       lightColor      : '#C9A227',
-      sound           : 'default',
+      sound           : true,   // boolean true = default system sound
+      enableLights    : true,
+      enableVibrate   : true,
     });
   } catch (e) {
     console.warn('[TG Notif] ensureAndroidChannel:', e?.message);
@@ -153,9 +161,8 @@ function isDaySuppressed(dateStr, dayOverrides) {
 async function scheduleOne({ title, body, triggerDate, entityId }) {
   const N = await getNative();
   if (!N) {
-    // Stub: log what would fire and return a fake ID for map storage
     const fakeId = `stub_${entityId}_${triggerDate.getTime()}`;
-    console.log(`[TG Notif] WOULD schedule: "${title}" at ${triggerDate.toLocaleString()} (entityId: ${entityId})`);
+    console.log(`[TG Notif] WOULD schedule: "${title}" at ${triggerDate.toLocaleString()}`);
     return fakeId;
   }
   try {
@@ -163,11 +170,14 @@ async function scheduleOne({ title, body, triggerDate, entityId }) {
       content: {
         title,
         body,
-        sound   : 'default',
-        data    : { entityId },
+        sound  : true,   // boolean true = default system sound on both platforms
+        data   : { entityId },
         ...(Platform.OS === 'android' && { channelId: CHANNEL_ID }),
       },
-      trigger: { date: triggerDate },
+      trigger: {
+        type: 'date',    // explicit type required in expo-notifications v0.20+
+        date: triggerDate,
+      },
     });
   } catch (e) {
     console.warn('[TG Notif] scheduleOne failed:', e?.message);
@@ -287,8 +297,6 @@ export async function resyncAllReminders(prefsOverride = null) {
     }
 
     const { granted } = await checkPermissions();
-    // In stub mode (NOTIF_AVAILABLE=false), granted=false but we still run
-    // the logic to verify correctness and populate the stub ID map.
     if (!granted && NOTIF_AVAILABLE) {
       await cancelAllReminders();
       return;
