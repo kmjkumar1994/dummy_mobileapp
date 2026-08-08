@@ -1,18 +1,12 @@
 /**
  * scheduler.js — Time Guardian notification scheduler
  *
- * expo-notifications requires a custom dev build — it is NOT available in Expo Go.
+ * Two notifications per item:
+ *   1. leadMinutes before start  → "X min reminder"
+ *   2. Exactly at start time     → "Starting now"
  *
- * HOW TO ENABLE REAL NOTIFICATIONS:
- *   1. Run:  npx expo prebuild  (or use EAS Build)
- *   2. Run:  npx expo run:android  (or run:ios)
- *   3. Ensure NOTIF_AVAILABLE = true below (already set).
- *
- * Fixes applied:
- *   - setNotificationHandler registered on first load (required for delivery)
- *   - trigger uses { type: 'date', date } — explicit type required in v0.20+
- *   - sound: true (boolean) on both channel and content — not the string 'default'
- *   - enableLights + enableVibrate on Android channel
+ * expo-notifications requires a custom dev build (not Expo Go).
+ * Set NOTIF_AVAILABLE = false to run in safe no-op stub mode.
  */
 
 import { Platform } from 'react-native';
@@ -28,8 +22,6 @@ import {
 } from '../storage/repository';
 
 // ─── Feature flag ─────────────────────────────────────────────────────────────
-// true  = custom dev build (expo run:android / EAS Build) — real notifications
-// false = Expo Go — all calls no-op safely, preferences still persist in storage
 const NOTIF_AVAILABLE = true;
 
 // ─── Native module loader ─────────────────────────────────────────────────────
@@ -41,9 +33,6 @@ async function getNative() {
   if (_N) return _N;
   try {
     _N = await import('expo-notifications');
-
-    // REQUIRED: without this Android silently drops every notification.
-    // Must be set once before any scheduleNotificationAsync call.
     _N.setNotificationHandler({
       handleNotification: async () => ({
         shouldShowAlert : true,
@@ -51,7 +40,6 @@ async function getNative() {
         shouldSetBadge  : false,
       }),
     });
-
     return _N;
   } catch (e) {
     console.warn('[TG Notif] expo-notifications unavailable:', e?.message);
@@ -73,7 +61,7 @@ export async function ensureAndroidChannel() {
       importance      : N.AndroidImportance.HIGH,
       vibrationPattern: [0, 250, 250, 250],
       lightColor      : '#C9A227',
-      sound           : true,   // boolean true = default system sound
+      sound           : true,
       enableLights    : true,
       enableVibrate   : true,
     });
@@ -86,10 +74,7 @@ export async function ensureAndroidChannel() {
 
 export async function requestPermissions() {
   const N = await getNative();
-  if (!N) {
-    console.log('[TG Notif] requestPermissions: dev build required');
-    return { granted: false, status: 'dev-build-required' };
-  }
+  if (!N) return { granted: false, status: 'dev-build-required' };
   try {
     await ensureAndroidChannel();
     const { status } = await N.requestPermissionsAsync({
@@ -121,11 +106,19 @@ function parseTime(timeStr) {
   return { h, m };
 }
 
-function buildTriggerDate(dateStr, timeStr, leadMinutes) {
+/**
+ * Build a Date for dateStr + timeStr, offset by offsetMinutes.
+ * offsetMinutes = 0  → exact start time
+ * offsetMinutes = -N → N minutes before start
+ * Returns null if the resulting time is already in the past.
+ */
+function buildTriggerDate(dateStr, timeStr, offsetMinutes = 0) {
   const [y, mo, d] = dateStr.split('-').map(Number);
   const { h, m }   = parseTime(timeStr);
   const trigger    = new Date(y, mo - 1, d, h, m, 0, 0);
-  trigger.setMinutes(trigger.getMinutes() - leadMinutes);
+  if (offsetMinutes !== 0) {
+    trigger.setMinutes(trigger.getMinutes() + offsetMinutes);
+  }
   return trigger > new Date() ? trigger : null;
 }
 
@@ -156,34 +149,71 @@ function isDaySuppressed(dateStr, dayOverrides) {
   return ov ? SUPPRESSED_TYPES.has(ov.type) : false;
 }
 
-// ─── Core schedule / cancel ───────────────────────────────────────────────────
+// ─── Core: schedule a single notification ────────────────────────────────────
 
 async function scheduleOne({ title, body, triggerDate, entityId }) {
   const N = await getNative();
   if (!N) {
-    const fakeId = `stub_${entityId}_${triggerDate.getTime()}`;
     console.log(`[TG Notif] WOULD schedule: "${title}" at ${triggerDate.toLocaleString()}`);
-    return fakeId;
+    return `stub_${entityId}_${triggerDate.getTime()}`;
   }
   try {
     return await N.scheduleNotificationAsync({
       content: {
         title,
         body,
-        sound  : true,   // boolean true = default system sound on both platforms
+        sound  : true,
         data   : { entityId },
         ...(Platform.OS === 'android' && { channelId: CHANNEL_ID }),
       },
-      trigger: {
-        type: 'date',    // explicit type required in expo-notifications v0.20+
-        date: triggerDate,
-      },
+      trigger: { type: 'date', date: triggerDate },
     });
   } catch (e) {
     console.warn('[TG Notif] scheduleOne failed:', e?.message);
     return null;
   }
 }
+
+/**
+ * Schedule BOTH notifications for one item on one date:
+ *   - leadMinutes before start  (if leadMinutes > 0 and trigger is in the future)
+ *   - Exactly at start time     (always attempted, skipped only if already past)
+ *
+ * Returns array of scheduled notification IDs (0, 1, or 2 entries).
+ */
+async function scheduleBoth({ title, startTime, dateStr, leadMinutes, entityId }) {
+  const ids = [];
+
+  // 1 — lead reminder (X min before)
+  if (leadMinutes > 0) {
+    const leadTrigger = buildTriggerDate(dateStr, startTime, -leadMinutes);
+    if (leadTrigger) {
+      const id = await scheduleOne({
+        title,
+        body       : `Starting in ${leadMinutes} min — at ${startTime}`,
+        triggerDate: leadTrigger,
+        entityId,
+      });
+      if (id) ids.push(id);
+    }
+  }
+
+  // 2 — exact start time
+  const startTrigger = buildTriggerDate(dateStr, startTime, 0);
+  if (startTrigger) {
+    const id = await scheduleOne({
+      title,
+      body       : `Starting now — ${startTime}`,
+      triggerDate: startTrigger,
+      entityId,
+    });
+    if (id) ids.push(id);
+  }
+
+  return ids;
+}
+
+// ─── Cancel ───────────────────────────────────────────────────────────────────
 
 export async function cancelReminder(entityId) {
   const N = await getNative();
@@ -220,23 +250,24 @@ export async function scheduleBlockReminder(block, leadMinutes, dates, dayOverri
   await cancelReminder(block.id);
   if (!block.active || block.reminder === false) return [];
 
-  const newIds = [];
+  const allIds = [];
   for (const dateStr of dates) {
     const dow = new Date(dateStr + 'T00:00:00').getDay();
     if (!block.days?.includes(dow)) continue;
     if (isDaySuppressed(dateStr, dayOverrides)) continue;
-    const triggerDate = buildTriggerDate(dateStr, block.start, leadMinutes);
-    if (!triggerDate) continue;
-    const id = await scheduleOne({
+
+    const ids = await scheduleBoth({
       title      : `⏰ ${block.label}`,
-      body       : `Starting at ${block.start} — ${leadMinutes} min reminder`,
-      triggerDate,
+      startTime  : block.start,
+      dateStr,
+      leadMinutes,
       entityId   : block.id,
     });
-    if (id) newIds.push(id);
+    allIds.push(...ids);
   }
-  await setNotifIdsForEntity(block.id, newIds);
-  return newIds;
+
+  await setNotifIdsForEntity(block.id, allIds);
+  return allIds;
 }
 
 // ─── Daily task reminders ─────────────────────────────────────────────────────
@@ -246,16 +277,14 @@ export async function scheduleDailyTaskReminder(task, leadMinutes, dayOverrides 
   if (task.reminder === false || !task.date || !task.time) return [];
   if (isDaySuppressed(task.date, dayOverrides)) return [];
 
-  const triggerDate = buildTriggerDate(task.date, task.time, leadMinutes);
-  if (!triggerDate) return [];
-
-  const id = await scheduleOne({
+  const ids = await scheduleBoth({
     title      : `📋 ${task.title}`,
-    body       : `Task at ${task.time} — ${leadMinutes} min reminder`,
-    triggerDate,
+    startTime  : task.time,
+    dateStr    : task.date,
+    leadMinutes,
     entityId   : task.id,
   });
-  const ids = id ? [id] : [];
+
   await setNotifIdsForEntity(task.id, ids);
   return ids;
 }
@@ -266,23 +295,24 @@ export async function scheduleRecurringTaskReminder(task, leadMinutes, dates, da
   await cancelReminder(task.id);
   if (!task.active || task.reminder === false || !task.time) return [];
 
-  const newIds = [];
+  const allIds = [];
   for (const dateStr of dates) {
     const dow = new Date(dateStr + 'T00:00:00').getDay();
     if (!task.days?.includes(dow)) continue;
     if (isDaySuppressed(dateStr, dayOverrides)) continue;
-    const triggerDate = buildTriggerDate(dateStr, task.time, leadMinutes);
-    if (!triggerDate) continue;
-    const id = await scheduleOne({
+
+    const ids = await scheduleBoth({
       title      : `📋 ${task.title}`,
-      body       : `Task at ${task.time} — ${leadMinutes} min reminder`,
-      triggerDate,
+      startTime  : task.time,
+      dateStr,
+      leadMinutes,
       entityId   : task.id,
     });
-    if (id) newIds.push(id);
+    allIds.push(...ids);
   }
-  await setNotifIdsForEntity(task.id, newIds);
-  return newIds;
+
+  await setNotifIdsForEntity(task.id, allIds);
+  return allIds;
 }
 
 // ─── Full resync ──────────────────────────────────────────────────────────────

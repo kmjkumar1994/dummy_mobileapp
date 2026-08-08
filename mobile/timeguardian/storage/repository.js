@@ -603,9 +603,9 @@ export async function getDailySummaryChartData(days = 7) {
 // Shape: { enabled: boolean, leadMinutes: number, permissionStatus: string }
 
 export const DEFAULT_NOTIF_PREFS = {
-  enabled        : false,   // off until user explicitly enables
-  leadMinutes    : 10,      // default: 10 min before block/task
-  permissionStatus: 'undetermined', // 'granted' | 'denied' | 'undetermined'
+  enabled         : false,
+  leadMinutes     : 0,      // 0 = notify at exact start time
+  permissionStatus: 'undetermined',
 };
 
 export async function getNotifPrefs() {
