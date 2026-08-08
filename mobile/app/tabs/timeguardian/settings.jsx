@@ -403,7 +403,7 @@ const LEAD_OPTIONS = [
 
 function RemindersSection({ notifPrefs, onUpdate, onRequestPermission }) {
   const enabled     = notifPrefs?.enabled      ?? false;
-  const lead        = notifPrefs?.leadMinutes  ?? 10;
+  const lead        = notifPrefs?.leadMinutes || 10;  // treat 0 same as unset — default to 10
   const permStatus  = notifPrefs?.permissionStatus ?? 'undetermined';
   const denied      = permStatus === 'denied';
   const granted     = permStatus === 'granted';

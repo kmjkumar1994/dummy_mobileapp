@@ -604,7 +604,7 @@ export async function getDailySummaryChartData(days = 7) {
 
 export const DEFAULT_NOTIF_PREFS = {
   enabled         : false,
-  leadMinutes     : 0,      // 0 = notify at exact start time
+  leadMinutes     : 10,     // 10 min before start — matches the settings UI default
   permissionStatus: 'undetermined',
 };
 

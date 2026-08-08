@@ -304,11 +304,13 @@ export function TimeGuardianProvider({ children }) {
   const setDayOverride = useCallback(async (dateStr, type, note = '') => {
     await repoSaveDayOverride(dateStr, type, note);
     await refreshDayOverrides();
+    resyncAllReminders().catch(() => {});
   }, [refreshDayOverrides]);
 
   const removeDayOverride = useCallback(async (dateStr) => {
     await repoClearDayOverride(dateStr);
     await refreshDayOverrides();
+    resyncAllReminders().catch(() => {});
   }, [refreshDayOverrides]);
 
   // ── Log ───────────────────────────────────────────────────────────────────
