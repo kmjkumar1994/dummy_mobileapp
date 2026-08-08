@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { StatusBar } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -13,8 +14,22 @@ const ROOT_SCREEN_OPTIONS = {
   animationDuration: 200,
 };
 
+// ─── Shared navigation helper ─────────────────────────────────────────────────
+
+function navigateFromNotif(router, data) {
+  if (!data) return;
+  const { entityType, date } = data;
+  if (entityType === 'dailyTask' || entityType === 'recurringTask') {
+    const target = date || new Date().toISOString().slice(0, 10);
+    router.push({ pathname: '/tabs/timeguardian/day', params: { date: target } });
+  } else {
+    // block or unknown — main TG home shows today's schedule
+    router.push('/tabs/timeguardian');
+  }
+}
+
 export default function RootLayout() {
-  const router = useRouter();
+  const router           = useRouter();
   const notifListenerRef = useRef(null);
 
   useEffect(() => {
@@ -22,25 +37,22 @@ export default function RootLayout() {
     StatusBar.setBackgroundColor('#0F0F0F', true);
     StatusBar.setTranslucent(false);
 
-    // Wire notification tap handler — navigates to the relevant TG screen
-    let Notifications;
     import('expo-notifications')
       .then((N) => {
-        Notifications = N;
+        // ── Cold start: app was killed, user tapped notification to open it ──
+        // getLastNotificationResponseAsync returns the response that launched the app.
+        N.getLastNotificationResponseAsync().then((response) => {
+          if (response) {
+            const data = response?.notification?.request?.content?.data;
+            // Small delay so the navigator is mounted before we push
+            setTimeout(() => navigateFromNotif(router, data), 300);
+          }
+        }).catch(() => {});
+
+        // ── Foreground / background: app already running ──
         notifListenerRef.current = N.addNotificationResponseReceivedListener((response) => {
           const data = response?.notification?.request?.content?.data;
-          if (!data) return;
-
-          const { entityType, date } = data;
-
-          if (entityType === 'dailyTask' || entityType === 'recurringTask') {
-            // Navigate to the day detail screen for that date
-            const target = date || new Date().toISOString().slice(0, 10);
-            router.push({ pathname: '/tabs/timeguardian/day', params: { date: target } });
-          } else {
-            // Block or unknown — open the TG home (today's schedule is visible there)
-            router.push('/tabs/timeguardian');
-          }
+          navigateFromNotif(router, data);
         });
       })
       .catch(() => {
