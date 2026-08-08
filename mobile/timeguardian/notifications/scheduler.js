@@ -151,7 +151,7 @@ function isDaySuppressed(dateStr, dayOverrides) {
 
 // ─── Core: schedule a single notification ────────────────────────────────────
 
-async function scheduleOne({ title, body, triggerDate, entityId }) {
+async function scheduleOne({ title, body, triggerDate, entityId, entityType, date }) {
   const N = await getNative();
   if (!N) {
     console.log(`[TG Notif] WOULD schedule: "${title}" at ${triggerDate.toLocaleString()}`);
@@ -163,7 +163,8 @@ async function scheduleOne({ title, body, triggerDate, entityId }) {
         title,
         body,
         sound  : true,
-        data   : { entityId },
+        // data is available in the tap handler via response.notification.request.content.data
+        data   : { entityId, entityType, date },
         ...(Platform.OS === 'android' && { channelId: CHANNEL_ID }),
       },
       trigger: { type: 'date', date: triggerDate },
@@ -181,10 +182,9 @@ async function scheduleOne({ title, body, triggerDate, entityId }) {
  *
  * Returns array of scheduled notification IDs (0, 1, or 2 entries).
  */
-async function scheduleBoth({ title, startTime, dateStr, leadMinutes, entityId }) {
+async function scheduleBoth({ title, startTime, dateStr, leadMinutes, entityId, entityType }) {
   const ids = [];
 
-  // 1 — lead reminder (X min before)
   if (leadMinutes > 0) {
     const leadTrigger = buildTriggerDate(dateStr, startTime, -leadMinutes);
     if (leadTrigger) {
@@ -193,12 +193,13 @@ async function scheduleBoth({ title, startTime, dateStr, leadMinutes, entityId }
         body       : `Starting in ${leadMinutes} min — at ${startTime}`,
         triggerDate: leadTrigger,
         entityId,
+        entityType,
+        date       : dateStr,
       });
       if (id) ids.push(id);
     }
   }
 
-  // 2 — exact start time
   const startTrigger = buildTriggerDate(dateStr, startTime, 0);
   if (startTrigger) {
     const id = await scheduleOne({
@@ -206,6 +207,8 @@ async function scheduleBoth({ title, startTime, dateStr, leadMinutes, entityId }
       body       : `Starting now — ${startTime}`,
       triggerDate: startTrigger,
       entityId,
+      entityType,
+      date       : dateStr,
     });
     if (id) ids.push(id);
   }
