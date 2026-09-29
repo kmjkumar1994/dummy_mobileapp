@@ -184,8 +184,9 @@ export async function importAudioFile() {
   // Prefer extension from the file name; fall back to MIME type.
   const rawName   = asset.name || sourceUri.split('/').pop() || 'audio';
   const extMatch  = rawName.match(/\.([a-zA-Z0-9]+)$/);
-  const ext       = extMatch ? extMatch[1].toLowerCase() : (mimeType.split('/')[1] || 'audio');
-  const format    = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'].includes(ext) ? ext : ext;
+  const ext       = extMatch ? extMatch[1].toLowerCase() : (mimeType.split('/').pop() || 'wav');
+  // Normalise known formats; keep others as-is so the editor can handle them
+  const format    = ext || 'wav';
 
   // ── 3. Ensure destination directory exists ─────────────────────────────────
   const destDir = `${FileSystem.documentDirectory}converted/`;

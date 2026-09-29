@@ -75,7 +75,13 @@ export default function AudioEditorScreen() {
   const params = useLocalSearchParams();
   const fileUri  = params.fileUri;
   const fileName = params.fileName || 'audio';
-  const format   = (params.format || '').toLowerCase() === 'mp3' ? 'mp3' : 'wav';
+  // Derive format from params, falling back to the file extension in fileName.
+  // Never default blindly to 'wav' — that's what caused imported mp3s to save as wav.
+  const rawFormat = (params.format || '').toLowerCase();
+  const extFromName = (fileName.match(/\.([a-zA-Z0-9]+)$/) || [])[1]?.toLowerCase() || '';
+  const resolvedFormat = rawFormat && rawFormat !== 'undefined' ? rawFormat : extFromName;
+  // Backend only supports wav and mp3 output — map anything else to mp3 (lossy) as a safe default
+  const format = resolvedFormat === 'wav' ? 'wav' : 'mp3';
 
   // Scoped to fileUri — this screen only ever cares about this one file, so
   // it only re-renders on ticks that are actually about it.

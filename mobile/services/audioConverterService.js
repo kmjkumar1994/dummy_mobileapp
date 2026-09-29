@@ -309,7 +309,8 @@ export async function editAudioSegments(sourceUri, fileName, format, segments, o
 
   await ensureOutputDir();
 
-  const fmt = format === 'mp3' ? 'mp3' : 'wav';
+  // Backend supports wav and mp3 output — normalise anything else to mp3
+  const fmt = (format || '').toLowerCase() === 'wav' ? 'wav' : 'mp3';
   const baseName = `edited_${getBaseName(fileName)}_${getTimestamp()}`;
   const outputUri = `${OUTPUT_DIR}${baseName}.${fmt}`;
 
