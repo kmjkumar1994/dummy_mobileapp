@@ -45,18 +45,18 @@ async function writeAll(entries) {
  * Save a new conversion entry.
  * Silently no-ops on error so it never breaks the converter flow.
  */
-export async function saveConversion({ fileName, fileUri, format, size }) {
+export async function saveConversion({ fileName, fileUri, format, size, source }) {
   try {
     const entries = await readAll();
     const entry = {
-      id: makeId(),
+      id        : makeId(),
       fileName,
       fileUri,
-      format: format.toLowerCase(),
-      size: size || 0,
-      createdAt: new Date().toISOString(),
+      format    : format.toLowerCase(),
+      size      : size || 0,
+      createdAt : new Date().toISOString(),
+      ...(source ? { source } : {}),   // 'imported' | 'converted' — omitted for converted (back-compat)
     };
-    // Newest first
     await writeAll([entry, ...entries]);
     return entry;
   } catch {
@@ -149,4 +149,76 @@ export async function fileExists(fileUri) {
   } catch {
     return false;
   }
+}
+
+// ─── Import external audio file ───────────────────────────────────────────────
+
+/**
+ * Open the system document picker filtered to audio files, copy the selected
+ * file into the app's private documents directory, and save a history record.
+ *
+ * Returns the new history entry, or null if the user cancelled.
+ * Throws on any real error (copy failed, disk full, etc.) so the caller can
+ * show an error message.
+ *
+ * The record is identical in shape to a converted file except for an extra
+ * `source: 'imported'` field — the audio editor and all other features work
+ * with it transparently.
+ */
+export async function importAudioFile() {
+  // ── 1. Pick ────────────────────────────────────────────────────────────────
+  const DocumentPicker = await import('expo-document-picker');
+  const result = await DocumentPicker.getDocumentAsync({
+    type      : 'audio/*',
+    copyToCacheDirectory: false,  // we copy to documentDirectory ourselves
+  });
+
+  // User cancelled — result.canceled is true in SDK 49+
+  if (result.canceled || !result.assets?.length) return null;
+
+  const asset    = result.assets[0];
+  const sourceUri = asset.uri;
+  const mimeType  = asset.mimeType || '';
+
+  // ── 2. Derive format ───────────────────────────────────────────────────────
+  // Prefer extension from the file name; fall back to MIME type.
+  const rawName   = asset.name || sourceUri.split('/').pop() || 'audio';
+  const extMatch  = rawName.match(/\.([a-zA-Z0-9]+)$/);
+  const ext       = extMatch ? extMatch[1].toLowerCase() : (mimeType.split('/')[1] || 'audio');
+  const format    = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'].includes(ext) ? ext : ext;
+
+  // ── 3. Ensure destination directory exists ─────────────────────────────────
+  const destDir = `${FileSystem.documentDirectory}converted/`;
+  const dirInfo = await FileSystem.getInfoAsync(destDir);
+  if (!dirInfo.exists) {
+    await FileSystem.makeDirectoryAsync(destDir, { intermediates: true });
+  }
+
+  // ── 4. Build a unique destination filename ─────────────────────────────────
+  // Strip any existing extension, sanitise, then re-add extension.
+  const baseName  = rawName
+    .replace(/\.[^.]+$/, '')                  // strip extension
+    .replace(/[^a-zA-Z0-9._-]/g, '_')         // sanitise
+    .slice(0, 80);                             // cap length
+  const uniqueSuffix = Date.now().toString(36);
+  const destFileName = `${baseName}_${uniqueSuffix}.${ext}`;
+  const destUri      = `${destDir}${destFileName}`;
+
+  // ── 5. Copy into app-private storage ──────────────────────────────────────
+  await FileSystem.copyAsync({ from: sourceUri, to: destUri });
+
+  // Verify copy succeeded
+  const destInfo = await FileSystem.getInfoAsync(destUri);
+  if (!destInfo.exists) throw new Error('File copy failed — destination not found.');
+
+  // ── 6. Save history record ─────────────────────────────────────────────────
+  const entry = await saveConversion({
+    fileName : destFileName,
+    fileUri  : destUri,
+    format,
+    size     : destInfo.size ?? asset.size ?? 0,
+    source   : 'imported',         // distinguishes from converted files in UI
+  });
+
+  return entry;
 }

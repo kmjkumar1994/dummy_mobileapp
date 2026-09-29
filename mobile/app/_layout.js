@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useEffect, useRef } from 'react';
+// import { useEffect, useRef } from 'react';
 import { StatusBar } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { SafeAreaProvider } from 'react-native-safe-area-context';

@@ -24,6 +24,7 @@ import {
   deleteEntry,
   removeRecord,
   fileExists,
+  importAudioFile,
 } from '../../../services/conversionHistoryService';
 import { useAudioPlayer } from '../../../hooks/useAudioPlayer';
 
@@ -97,6 +98,11 @@ const FileItem = React.memo(function FileItem({
               {(item.format || '').toUpperCase()}
             </Text>
           </View>
+          {item.source === 'imported' && (
+            <View style={styles.importedBadge}>
+              <Text style={styles.importedBadgeText}>Imported</Text>
+            </View>
+          )}
         </View>
 
         <View style={styles.metaRow}>
@@ -125,11 +131,11 @@ const FileItem = React.memo(function FileItem({
         )}
 
         <View style={styles.actions}>
-          <ActionBtn icon="open-outline"        label="Open"   color={Colors.textSecondary} onPress={onOpen}         disabled={isMissing} />
-          <ActionBtn icon="share-social-outline" label="Share"  color={Colors.textSecondary} onPress={onShare}        disabled={isMissing} />
-          <ActionBtn icon="create-outline"       label="Rename" color={Colors.primary}       onPress={onRename}       disabled={isMissing} />
-          <ActionBtn icon="cut-outline"          label="Edit"   color={Colors.primary}       onPress={onEdit}         disabled={isMissing} />
-          <ActionBtn icon="trash-outline"        label="Delete" color={Colors.error}         onPress={onDelete} />
+          <ActionBtn icon="open-outline"         label="Open"   color={Colors.textSecondary} onPress={onOpen}        disabled={isMissing} />
+          <ActionBtn icon="share-social-outline"  label="Share"  color={Colors.textSecondary} onPress={onShare}       disabled={isMissing} />
+          <ActionBtn icon="create-outline"        label="Rename" color={Colors.primary}       onPress={onRename}      disabled={isMissing} />
+          <ActionBtn icon="cut-outline"           label="Edit"   color={Colors.primary}       onPress={onEdit}        disabled={isMissing} />
+          <ActionBtn icon="trash-outline"         label="Delete" color={Colors.error}         onPress={onDelete} />
         </View>
       </View>
     </View>
@@ -140,15 +146,14 @@ const FileItem = React.memo(function FileItem({
 
 export default function ConvertedFilesScreen() {
   const router = useRouter();
-  const player = useAudioPlayer(); // unscoped — action functions only, no re-render subscription
-  const [entries, setEntries]       = useState([]);
-  const [loading, setLoading]       = useState(true);
-  const [search, setSearch]         = useState('');
-  const [missingIds, setMissingIds] = useState(new Set());
+  const player = useAudioPlayer();
 
-  // Disabled while dragging a row's scrub bar — otherwise the FlatList steals
-  // the horizontal drag gesture and the slider never moves.
+  const [entries, setEntries]         = useState([]);
+  const [loading, setLoading]         = useState(true);
+  const [search, setSearch]           = useState('');
+  const [missingIds, setMissingIds]   = useState(new Set());
   const [scrollEnabled, setScrollEnabled] = useState(true);
+  const [importing, setImporting]     = useState(false);
 
   // Rename modal
   const [renameVisible, setRenameVisible] = useState(false);
@@ -157,7 +162,7 @@ export default function ConvertedFilesScreen() {
   const [renameBusy, setRenameBusy]       = useState(false);
   const [renameError, setRenameError]     = useState('');
 
-  // ── data loading ────────────────────────────────────────────────────────────
+  // ── data loading ─────────────────────────────────────────────────────────────
 
   const checkMissing = useCallback(async (data) => {
     const results = await Promise.all(
@@ -172,24 +177,19 @@ export default function ConvertedFilesScreen() {
     try {
       const data = await getHistory();
       setEntries(data);
-      // File-existence check runs after render — does not block the list appearing.
       checkMissing(data);
     } finally {
       setLoading(false);
     }
   }, [checkMissing]);
 
-  // Reload on focus only (not on every render).
-  // useFocusEffect must receive a sync callback — async functions return a
-  // Promise which React Navigation treats as an accidental cleanup value and
-  // emits a warning. We wrap the async loadHistory in a plain sync callback.
   useFocusEffect(
     React.useCallback(() => {
       loadHistory();
     }, [loadHistory])
   );
 
-  // ── derived data (memoized — only recalculates when entries or search changes)
+  // ── derived data ──────────────────────────────────────────────────────────────
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -197,9 +197,21 @@ export default function ConvertedFilesScreen() {
     return entries.filter((e) => e.fileName.toLowerCase().includes(term));
   }, [entries, search]);
 
-  // ── stable action handlers ───────────────────────────────────────────────────
-  // Each handler is stable (useCallback with no per-item deps).
-  // Per-item calls are wired via closures inside renderItem / FileItem.
+  // ── action handlers ───────────────────────────────────────────────────────────
+
+  const handleImport = useCallback(async () => {
+    if (importing) return;
+    setImporting(true);
+    try {
+      const entry = await importAudioFile();
+      if (!entry) return; // user cancelled
+      setEntries((prev) => [entry, ...prev]);
+    } catch (err) {
+      Alert.alert('Import failed', err?.message || 'Could not import the file.');
+    } finally {
+      setImporting(false);
+    }
+  }, [importing]);
 
   const handleShare = useCallback(async (entry) => {
     try {
@@ -245,10 +257,7 @@ export default function ConvertedFilesScreen() {
   }, []);
 
   const confirmRename = useCallback(async () => {
-    if (!renameInput.trim()) {
-      setRenameError('Name cannot be empty.');
-      return;
-    }
+    if (!renameInput.trim()) { setRenameError('Name cannot be empty.'); return; }
     setRenameBusy(true);
     setRenameError('');
     try {
@@ -276,11 +285,7 @@ export default function ConvertedFilesScreen() {
               await player.stop(entry.fileUri);
               await deleteEntry(entry.id);
               setEntries((prev) => prev.filter((e) => e.id !== entry.id));
-              setMissingIds((prev) => {
-                const next = new Set(prev);
-                next.delete(entry.id);
-                return next;
-              });
+              setMissingIds((prev) => { const n = new Set(prev); n.delete(entry.id); return n; });
             } catch (err) {
               Alert.alert('Delete failed', err?.message || 'Could not delete file.');
             }
@@ -303,11 +308,7 @@ export default function ConvertedFilesScreen() {
           onPress: async () => {
             await removeRecord(entry.id);
             setEntries((prev) => prev.filter((e) => e.id !== entry.id));
-            setMissingIds((prev) => {
-              const next = new Set(prev);
-              next.delete(entry.id);
-              return next;
-            });
+            setMissingIds((prev) => { const n = new Set(prev); n.delete(entry.id); return n; });
           },
         },
       ],
@@ -316,21 +317,15 @@ export default function ConvertedFilesScreen() {
   }, []);
 
   const handleClearSearch = useCallback(() => setSearch(''), []);
+  const handleRenameInput = useCallback((v) => { setRenameInput(v); setRenameError(''); }, []);
 
-  const handleRenameInput = useCallback((v) => {
-    setRenameInput(v);
-    setRenameError('');
-  }, []);
-
-  // ── FlatList helpers ─────────────────────────────────────────────────────────
+  // ── FlatList helpers ──────────────────────────────────────────────────────────
 
   const keyExtractor = useCallback((item) => item.id, []);
 
-  // renderItem is stable — closures capture the stable action handlers above.
-  // FileItem is React.memo so it only re-renders when its own props change.
   const renderItem = useCallback(({ item, index }) => {
     const isMissing = missingIds.has(item.id);
-    const isLast = index === filtered.length - 1;
+    const isLast    = index === filtered.length - 1;
     return (
       <FileItem
         item={item}
@@ -348,11 +343,28 @@ export default function ConvertedFilesScreen() {
     );
   }, [missingIds, filtered.length, handleOpen, handleShare, openRenameModal, handleEdit, handleDelete, handleRemoveBroken]);
 
-  // ── render ───────────────────────────────────────────────────────────────────
+  // ── render ────────────────────────────────────────────────────────────────────
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['bottom']}>
-      {/* Search bar */}
+
+      {/* ── Header with Import button ── */}
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Converted Files</Text>
+        <TouchableOpacity
+          style={[styles.importBtn, importing && styles.importBtnBusy]}
+          onPress={handleImport}
+          disabled={importing}
+          activeOpacity={0.75}
+        >
+          {importing
+            ? <ActivityIndicator size="small" color={Colors.primary} />
+            : <Ionicons name="add-circle-outline" size={18} color={Colors.primary} />}
+          <Text style={styles.importBtnText}>{importing ? 'Importing…' : 'Import'}</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* ── Search bar ── */}
       <View style={styles.searchWrap}>
         <Ionicons name="search-outline" size={17} color={Colors.textMuted} style={styles.searchIcon} />
         <TextInput
@@ -372,7 +384,7 @@ export default function ConvertedFilesScreen() {
         ) : null}
       </View>
 
-      {/* Content */}
+      {/* ── Content ── */}
       {loading ? (
         <View style={styles.centered}>
           <ActivityIndicator color={Colors.primary} />
@@ -381,12 +393,12 @@ export default function ConvertedFilesScreen() {
         <View style={styles.centered}>
           <Ionicons name="musical-notes-outline" size={40} color={Colors.border} />
           <Text style={styles.emptyTitle}>
-            {search.trim() ? 'No results' : 'No converted files yet'}
+            {search.trim() ? 'No results' : 'No files yet'}
           </Text>
           <Text style={styles.emptyHint}>
             {search.trim()
               ? 'Try a different search term.'
-              : 'Convert an audio file to see it here.'}
+              : 'Convert or import an audio file to see it here.'}
           </Text>
         </View>
       ) : (
@@ -405,25 +417,16 @@ export default function ConvertedFilesScreen() {
         />
       )}
 
-      {/* Rename modal */}
-      <Modal
-        visible={renameVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={closeRenameModal}
-      >
+      {/* ── Rename modal ── */}
+      <Modal visible={renameVisible} transparent animationType="fade" onRequestClose={closeRenameModal}>
         <View style={styles.modalOverlay}>
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            style={styles.modalKAV}
-          >
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalKAV}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>Rename file</Text>
               <Text style={styles.modalHint}>
                 Enter a new base name.{' '}
                 {renameTarget ? `Extension (.${renameTarget.format}) will be kept.` : ''}
               </Text>
-
               <TextInput
                 style={[styles.modalInput, renameError ? styles.modalInputError : null]}
                 value={renameInput}
@@ -434,7 +437,6 @@ export default function ConvertedFilesScreen() {
                 selectTextOnFocus
               />
               {renameError ? <Text style={styles.renameError}>{renameError}</Text> : null}
-
               <View style={styles.modalActions}>
                 <View style={{ flex: 1 }}>
                   <Button title="Cancel" variant="outline" size="sm" onPress={closeRenameModal} disabled={renameBusy} />
@@ -447,6 +449,7 @@ export default function ConvertedFilesScreen() {
           </KeyboardAvoidingView>
         </View>
       </Modal>
+
     </SafeAreaView>
   );
 }
@@ -456,6 +459,33 @@ export default function ConvertedFilesScreen() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: Colors.background },
 
+  // Header
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  headerTitle: { fontSize: 17, fontWeight: '700', color: Colors.text },
+  importBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: Colors.primary + '80',
+    backgroundColor: Colors.primary + '12',
+  },
+  importBtnBusy : { opacity: 0.6 },
+  importBtnText : { fontSize: 13, fontWeight: '600', color: Colors.primary },
+
+  // Search
   searchWrap: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -466,9 +496,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     gap: 8,
   },
-  searchIcon: { flexShrink: 0 },
+  searchIcon : { flexShrink: 0 },
   searchInput: { flex: 1, fontSize: 15, color: Colors.text, paddingVertical: 2 },
 
+  // Empty state
   centered: {
     flex: 1,
     alignItems: 'center',
@@ -476,44 +507,50 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
     gap: 10,
   },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: Colors.textSecondary,
-    textAlign: 'center',
-  },
-  emptyHint: {
-    fontSize: 13,
-    color: Colors.textMuted,
-    textAlign: 'center',
-    lineHeight: 19,
-  },
+  emptyTitle: { fontSize: 16, fontWeight: '600', color: Colors.textSecondary, textAlign: 'center' },
+  emptyHint : { fontSize: 13, color: Colors.textMuted, textAlign: 'center', lineHeight: 19 },
 
-  list: { paddingVertical: 8, paddingHorizontal: 16 },
-  item: { flexDirection: 'row', paddingVertical: 14, gap: 12 },
+  // List
+  list      : { paddingVertical: 8, paddingHorizontal: 16 },
+  item      : { flexDirection: 'row', paddingVertical: 14, gap: 12 },
   itemBorder: { borderBottomWidth: 1, borderBottomColor: Colors.border },
   itemAccent: { width: 3, borderRadius: 2, flexShrink: 0, alignSelf: 'stretch' },
-  itemBody: { flex: 1, gap: 4 },
-  itemRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  fileName: { flex: 1, fontSize: 14, fontWeight: '600', color: Colors.text },
-  formatBadge: {
+  itemBody  : { flex: 1, gap: 4 },
+  itemRow   : { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  fileName  : { flex: 1, fontSize: 14, fontWeight: '600', color: Colors.text },
+
+  // Format badge
+  formatBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, borderWidth: 1, flexShrink: 0 },
+  formatText : { fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
+
+  // Imported badge
+  importedBadge: {
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 5,
     borderWidth: 1,
+    borderColor: Colors.textMuted + '55',
+    backgroundColor: Colors.textMuted + '18',
     flexShrink: 0,
   },
-  formatText: { fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
-  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  metaText: { fontSize: 12, color: Colors.textMuted },
-  metaDot: { fontSize: 12, color: Colors.border },
-  missingBanner: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 },
-  missingText: { fontSize: 12, color: Colors.warning },
-  actions: { flexDirection: 'row', gap: 16, marginTop: 8 },
-  actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  actionBtnDisabled: { opacity: 0.4 },
-  actionLabel: { fontSize: 12, fontWeight: '500' },
+  importedBadgeText: { fontSize: 9, fontWeight: '700', color: Colors.textMuted, letterSpacing: 0.4 },
 
+  // Meta
+  metaRow   : { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  metaText  : { fontSize: 12, color: Colors.textMuted },
+  metaDot   : { fontSize: 12, color: Colors.border },
+
+  // Missing
+  missingBanner: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 },
+  missingText  : { fontSize: 12, color: Colors.warning },
+
+  // Action row
+  actions        : { flexDirection: 'row', gap: 16, marginTop: 8 },
+  actionBtn      : { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  actionBtnDisabled: { opacity: 0.4 },
+  actionLabel    : { fontSize: 12, fontWeight: '500' },
+
+  // Rename modal
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -521,7 +558,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 20,
   },
-  modalKAV: { width: '100%' },
+  modalKAV : { width: '100%' },
   modalCard: {
     backgroundColor: Colors.surface,
     borderRadius: 16,
@@ -530,9 +567,9 @@ const styles = StyleSheet.create({
     padding: 20,
     gap: 10,
   },
-  modalTitle: { fontSize: 16, fontWeight: '700', color: Colors.text },
-  modalHint: { fontSize: 13, color: Colors.textMuted, lineHeight: 18 },
-  modalInput: {
+  modalTitle      : { fontSize: 16, fontWeight: '700', color: Colors.text },
+  modalHint       : { fontSize: 13, color: Colors.textMuted, lineHeight: 18 },
+  modalInput      : {
     borderWidth: 1.5,
     borderColor: Colors.primary + '55',
     borderRadius: 12,
@@ -543,6 +580,6 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surfaceElevated,
   },
   modalInputError: { borderColor: Colors.error },
-  renameError: { fontSize: 12, color: Colors.error, marginTop: -4 },
-  modalActions: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  renameError    : { fontSize: 12, color: Colors.error, marginTop: -4 },
+  modalActions   : { flexDirection: 'row', gap: 10, marginTop: 4 },
 });
