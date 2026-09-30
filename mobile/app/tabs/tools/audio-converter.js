@@ -85,6 +85,39 @@ function getFormatFromFile(mimeType, fileName) {
   return ext || 'mp3';
 }
 
+/**
+ * Human-readable format label for a file.
+ * Reads the extension from the filename FIRST (most reliable for shared files
+ * from WhatsApp/Telegram where Android often sends a wrong or generic MIME).
+ * Falls back to MIME label only if the extension is missing or unrecognised.
+ */
+const EXT_LABELS = {
+  mp3: 'MP3', wav: 'WAV', ogg: 'OGG', opus: 'Opus',
+  aac: 'AAC', m4a: 'M4A', mp4: 'M4A', flac: 'FLAC',
+};
+
+function getFileLabel(mimeType, fileName) {
+  const ext = (fileName || '').match(/\.([a-zA-Z0-9]+)$/)?.[1]?.toLowerCase();
+  if (ext && EXT_LABELS[ext]) return EXT_LABELS[ext];
+  return getMimeLabel(mimeType);
+}
+
+/**
+ * Derive isMp3 / isWav from BOTH the MIME and the filename extension,
+ * because WhatsApp/Telegram often sends 'application/octet-stream' for mp3 files.
+ */
+function fileIsMp3(mimeType, fileName) {
+  if (isMp3Mime(mimeType)) return true;
+  const ext = (fileName || '').match(/\.([a-zA-Z0-9]+)$/)?.[1]?.toLowerCase();
+  return ext === 'mp3';
+}
+
+function fileIsWav(mimeType, fileName) {
+  if (isWavMime(mimeType)) return true;
+  const ext = (fileName || '').match(/\.([a-zA-Z0-9]+)$/)?.[1]?.toLowerCase();
+  return ext === 'wav';
+}
+
 // ─── screen ──────────────────────────────────────────────────────────────────
 
 export default function ConverterScreen() {
@@ -157,12 +190,12 @@ export default function ConverterScreen() {
   // if the screen isn't fully interactive yet.
   useEffect(() => {
     if (!selectedFile || selectedFile.source !== 'share') return;
-    if (!isMp3Mime(selectedFile.mimeType)) return;
+    if (!fileIsMp3(selectedFile.mimeType, selectedFile.name)) return;
 
     const timer = setTimeout(() => {
       Alert.alert(
         'Already MP3',
-        'This file is already MP3 — no conversion needed. Tap "Edit directly" to trim, adjust volume, or change voice.'
+        'This file is already MP3 — no conversion needed. Tap "Edit audio" to trim, adjust volume, or change voice.'
       );
     }, 400);
 
@@ -561,7 +594,7 @@ export default function ConverterScreen() {
           <View style={styles.sharedBadge}>
             <Ionicons name="share-social-outline" size={14} color={Colors.primary} />
             <Text style={styles.sharedBadgeText}>
-              Shared from another app · {getMimeLabel(selectedFile.mimeType)}
+              Shared from another app · {getFileLabel(selectedFile.mimeType, selectedFile.name)}
             </Text>
           </View>
         ) : null}
@@ -590,8 +623,8 @@ export default function ConverterScreen() {
                 </Text>
                 <Text style={styles.fileSize}>
                   {formatFileSize(selectedFile.size)}
-                  {selectedFile.mimeType && selectedFile.mimeType !== 'audio/opus'
-                    ? `  ·  ${getMimeLabel(selectedFile.mimeType)}`
+                  {selectedFile.mimeType || selectedFile.name
+                    ? `  ·  ${getFileLabel(selectedFile.mimeType, selectedFile.name)}`
                     : ''}
                 </Text>
               </View>
@@ -654,14 +687,14 @@ export default function ConverterScreen() {
           <Card style={styles.intentCard}>
             <Text style={styles.intentTitle}>What would you like to do?</Text>
             <Text style={styles.intentSubtitle}>
-              {isMp3Mime(selectedFile.mimeType)
+              {fileIsMp3(selectedFile.mimeType, selectedFile.name)
                 ? 'This file is already MP3 — editing is recommended.'
-                : isWavMime(selectedFile.mimeType)
+                : fileIsWav(selectedFile.mimeType, selectedFile.name)
                   ? 'This file is WAV — edit directly or convert to MP3.'
-                  : `${getMimeLabel(selectedFile.mimeType)} needs conversion first.`}
+                  : `${getFileLabel(selectedFile.mimeType, selectedFile.name)} needs conversion first.`}
             </Text>
 
-            {isMp3Mime(selectedFile.mimeType) || isWavMime(selectedFile.mimeType) ? (
+            {fileIsMp3(selectedFile.mimeType, selectedFile.name) || fileIsWav(selectedFile.mimeType, selectedFile.name) ? (
               <>
                 {/* Edit — RECOMMENDED for MP3 / WAV */}
                 <TouchableOpacity
@@ -686,7 +719,7 @@ export default function ConverterScreen() {
                 </TouchableOpacity>
 
                 {/* Convert to MP3 — secondary for WAV only */}
-                {isWavMime(selectedFile.mimeType) && (
+                {fileIsWav(selectedFile.mimeType, selectedFile.name) && (
                   <TouchableOpacity style={[styles.intentOption, styles.intentOptionSecondary]} activeOpacity={0.8} onPress={convertToWav}>
                     <View style={[styles.intentIcon, styles.intentIconSecondary]}>
                       <Ionicons name="swap-horizontal-outline" size={20} color={Colors.textSecondary} />
@@ -711,7 +744,7 @@ export default function ConverterScreen() {
                       <Text style={styles.intentOptionTitle}>Convert</Text>
                       <View style={styles.intentBadge}><Text style={styles.intentBadgeText}>Recommended</Text></View>
                     </View>
-                    <Text style={styles.intentOptionDesc}>{getMimeLabel(selectedFile.mimeType)} → WAV → MP3</Text>
+                    <Text style={styles.intentOptionDesc}>{getFileLabel(selectedFile.mimeType, selectedFile.name)} → WAV → MP3</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
                 </TouchableOpacity>
