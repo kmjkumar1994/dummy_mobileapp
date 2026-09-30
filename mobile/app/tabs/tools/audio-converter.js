@@ -64,6 +64,27 @@ function isMp3Mime(mimeType) {
   return m === 'audio/mpeg' || m === 'audio/mp3';
 }
 
+function isWavMime(mimeType) {
+  const m = (mimeType || '').toLowerCase();
+  return m === 'audio/wav' || m === 'audio/x-wav';
+}
+
+/** Returns true if the file is already in a final playable format (mp3 or wav) */
+function isAlreadyFinalFormat(mimeType, fileName) {
+  if (isMp3Mime(mimeType) || isWavMime(mimeType)) return true;
+  const ext = (fileName || '').split('.').pop().toLowerCase();
+  return ext === 'mp3' || ext === 'wav';
+}
+
+/** Derive the output format string for the audio editor from MIME + filename */
+function getFormatFromFile(mimeType, fileName) {
+  const m = (mimeType || '').toLowerCase();
+  if (m === 'audio/mpeg' || m === 'audio/mp3') return 'mp3';
+  if (m === 'audio/wav'  || m === 'audio/x-wav') return 'wav';
+  const ext = (fileName || '').match(/\.([a-zA-Z0-9]+)$/)?.[1]?.toLowerCase();
+  return ext || 'mp3';
+}
+
 // ─── screen ──────────────────────────────────────────────────────────────────
 
 export default function ConverterScreen() {
@@ -125,17 +146,28 @@ export default function ConverterScreen() {
     resetOutputs();
     setError('');
 
-    if (isMp3Mime(pendingFile.mimeType)) {
-      Alert.alert(
-        'Already MP3',
-        'This shared file is already in MP3 format — no conversion needed. You can share, rename, or edit it as-is.'
-      );
-    }
-
     // Mark the intent as consumed so the context won't re-trigger
     markProcessed();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shareStatus, pendingFile]);
+
+  // Show MP3 alert AFTER selectedFile is set and screen is mounted.
+  // Separated from the import effect so the Alert fires reliably — calling
+  // Alert.alert inside the same tick as setState can drop it on Android
+  // if the screen isn't fully interactive yet.
+  useEffect(() => {
+    if (!selectedFile || selectedFile.source !== 'share') return;
+    if (!isMp3Mime(selectedFile.mimeType)) return;
+
+    const timer = setTimeout(() => {
+      Alert.alert(
+        'Already MP3',
+        'This file is already MP3 — no conversion needed. Tap "Edit directly" to trim, adjust volume, or change voice.'
+      );
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [selectedFile]);
 
   // Show share intent errors in the screen's own error banner
   useEffect(() => {
@@ -617,6 +649,96 @@ export default function ConverterScreen() {
           </FadeIn>
         ) : null}
 
+        {/* ── What would you like to do? — intent picker (shared/picked file, before conversion) ── */}
+        {hasFile && !isBusy && !wavOutput && !mp3Output && (
+          <Card style={styles.intentCard}>
+            <Text style={styles.intentTitle}>What would you like to do?</Text>
+            <Text style={styles.intentSubtitle}>
+              {isMp3Mime(selectedFile.mimeType)
+                ? 'This file is already MP3 — editing is recommended.'
+                : isWavMime(selectedFile.mimeType)
+                  ? 'This file is WAV — edit directly or convert to MP3.'
+                  : `${getMimeLabel(selectedFile.mimeType)} needs conversion first.`}
+            </Text>
+
+            {isMp3Mime(selectedFile.mimeType) || isWavMime(selectedFile.mimeType) ? (
+              <>
+                {/* Edit — RECOMMENDED for MP3 / WAV */}
+                <TouchableOpacity
+                  style={[styles.intentOption, styles.intentOptionPrimary]}
+                  activeOpacity={0.8}
+                  onPress={() => router.push({
+                    pathname: '/tabs/tools/audio-editor',
+                    params: { fileUri: selectedFile.uri, fileName: selectedFile.name, format: getFormatFromFile(selectedFile.mimeType, selectedFile.name) },
+                  })}
+                >
+                  <View style={[styles.intentIcon, styles.intentIconPrimary]}>
+                    <Ionicons name="cut-outline" size={20} color={Colors.primary} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.intentLabelRow}>
+                      <Text style={styles.intentOptionTitle}>Edit audio</Text>
+                      <View style={styles.intentBadge}><Text style={styles.intentBadgeText}>Recommended</Text></View>
+                    </View>
+                    <Text style={styles.intentOptionDesc}>Trim · volume · voice preset</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
+                </TouchableOpacity>
+
+                {/* Convert to MP3 — secondary for WAV only */}
+                {isWavMime(selectedFile.mimeType) && (
+                  <TouchableOpacity style={[styles.intentOption, styles.intentOptionSecondary]} activeOpacity={0.8} onPress={convertToWav}>
+                    <View style={[styles.intentIcon, styles.intentIconSecondary]}>
+                      <Ionicons name="swap-horizontal-outline" size={20} color={Colors.textSecondary} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.intentOptionTitle, { color: Colors.textSecondary }]}>Convert to MP3</Text>
+                      <Text style={styles.intentOptionDesc}>WAV → MP3 at 192 kbps</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+                  </TouchableOpacity>
+                )}
+              </>
+            ) : (
+              <>
+                {/* Convert — RECOMMENDED for OGG / OPUS / AAC / M4A */}
+                <TouchableOpacity style={[styles.intentOption, styles.intentOptionPrimary]} activeOpacity={0.8} onPress={convertToWav}>
+                  <View style={[styles.intentIcon, styles.intentIconPrimary]}>
+                    <Ionicons name="swap-horizontal-outline" size={20} color={Colors.primary} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.intentLabelRow}>
+                      <Text style={styles.intentOptionTitle}>Convert</Text>
+                      <View style={styles.intentBadge}><Text style={styles.intentBadgeText}>Recommended</Text></View>
+                    </View>
+                    <Text style={styles.intentOptionDesc}>{getMimeLabel(selectedFile.mimeType)} → WAV → MP3</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
+                </TouchableOpacity>
+
+                {/* Edit — secondary for non-final formats */}
+                <TouchableOpacity
+                  style={[styles.intentOption, styles.intentOptionSecondary]}
+                  activeOpacity={0.8}
+                  onPress={() => router.push({
+                    pathname: '/tabs/tools/audio-editor',
+                    params: { fileUri: selectedFile.uri, fileName: selectedFile.name, format: getFormatFromFile(selectedFile.mimeType, selectedFile.name) },
+                  })}
+                >
+                  <View style={[styles.intentIcon, styles.intentIconSecondary]}>
+                    <Ionicons name="cut-outline" size={20} color={Colors.textSecondary} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.intentOptionTitle, { color: Colors.textSecondary }]}>Edit directly</Text>
+                    <Text style={styles.intentOptionDesc}>Skip conversion — trim · volume · voice</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+                </TouchableOpacity>
+              </>
+            )}
+          </Card>
+        )}
+
         {/* ── Convert buttons ── */}
         <Card style={styles.section}>
           <Text style={styles.sectionTitle}>Convert</Text>
@@ -640,6 +762,37 @@ export default function ConverterScreen() {
               style={styles.actionBtn}
             />
           </View>
+
+          {/* Edit directly — visible whenever a file is selected (shared or picked) */}
+          {hasFile && (
+            <TouchableOpacity
+              style={[styles.editDirectlyBtn, isBusy && styles.editDirectlyBtnDisabled]}
+              disabled={isBusy}
+              activeOpacity={0.75}
+              onPress={() => {
+                // Derive format from mimeType or filename extension
+                const mime = (selectedFile.mimeType || '').toLowerCase();
+                const extMatch = (selectedFile.name || '').match(/\.([a-zA-Z0-9]+)$/);
+                const extFromName = extMatch ? extMatch[1].toLowerCase() : '';
+                const formatFromMime =
+                  mime === 'audio/mpeg' || mime === 'audio/mp3' ? 'mp3' :
+                  mime === 'audio/wav'  || mime === 'audio/x-wav' ? 'wav' :
+                  extFromName || 'mp3';
+                router.push({
+                  pathname: '/tabs/tools/audio-editor',
+                  params: {
+                    fileUri:  selectedFile.uri,
+                    fileName: selectedFile.name,
+                    format:   formatFromMime,
+                  },
+                });
+              }}
+            >
+              <Ionicons name="cut-outline" size={16} color={Colors.primary} />
+              <Text style={styles.editDirectlyBtnText}>Edit directly (trim · volume · voice)</Text>
+              <Ionicons name="chevron-forward" size={14} color={Colors.primary} />
+            </TouchableOpacity>
+          )}
         </Card>
 
         {/* ── Output files ── */}
@@ -886,6 +1039,42 @@ const styles = StyleSheet.create({
 
   actions:   { gap: 12, marginTop: 4 },
   actionBtn: { width: '100%' },
+
+  editDirectlyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.primary + '60',
+    backgroundColor: Colors.primary + '0E',
+  },
+  editDirectlyBtnDisabled: { opacity: 0.4 },
+  editDirectlyBtnText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: Colors.primary,
+  },
+
+  // ── Intent picker card ────────────────────────────────────────────────────
+  intentCard       : { marginBottom: 16, gap: 10, borderWidth: 1.5, borderColor: Colors.primary + '40', backgroundColor: Colors.primary + '07' },
+  intentTitle      : { fontSize: 16, fontWeight: '700', color: Colors.text },
+  intentSubtitle   : { fontSize: 12, color: Colors.textMuted, lineHeight: 18, marginTop: -4 },
+  intentLabelRow   : { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 },
+  intentOption     : { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 12, padding: 14, borderWidth: 1.5 },
+  intentOptionPrimary  : { borderColor: Colors.primary + '70', backgroundColor: Colors.primary + '12' },
+  intentOptionSecondary: { borderColor: Colors.border, backgroundColor: Colors.surfaceElevated },
+  intentIcon       : { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
+  intentIconPrimary  : { backgroundColor: Colors.primary + '22' },
+  intentIconSecondary: { backgroundColor: Colors.border + '80' },
+  intentOptionTitle: { fontSize: 14, fontWeight: '700', color: Colors.text },
+  intentOptionDesc : { fontSize: 12, color: Colors.textMuted, lineHeight: 17 },
+  intentBadge      : { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 20, backgroundColor: Colors.primary },
+  intentBadgeText  : { fontSize: 10, fontWeight: '700', color: '#fff', letterSpacing: 0.3 },
 
   outputRow:       { paddingVertical: 12, gap: 6 },
   outputRowBorder: { borderBottomWidth: 1, borderBottomColor: Colors.border },
